@@ -53,6 +53,7 @@ export type ContentBlock =
 export interface ChatResponse {
   role: string;
   content: string | ContentBlock[];
+  usage?: UsageResponse;
 }
 
 // Represents the state/data needed for a chat interaction
@@ -88,12 +89,18 @@ export interface Message {
   content: string | ContentBlock[]; // Content can be simple text or structured blocks
 }
 
+export interface UsageResponse {
+  inputCost: number,
+  outputCost: number,
+  totalCost: number,
+}
+
 // Represents the structured response from an AI vendor adapter
 export interface AIResponse {
   role: string; // Typically 'assistant'
   content: string | ContentBlock[]; // The generated content
   // Optionally include usage stats if adapters provide them
-  // usage?: { inputTokens: number; outputTokens: number; };
+  usage?: UsageResponse;
 }
 
 // Options for making a request to an AI vendor adapter

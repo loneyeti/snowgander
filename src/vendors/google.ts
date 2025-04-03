@@ -16,8 +16,10 @@ import {
   ContentBlock, // Union type including ImageDataBlock
   MCPTool,
   ImageDataBlock, // Specific type for checking/casting
-  Message, // Ensure Message is imported
+  Message,
+  UsageResponse, // Ensure Message is imported
 } from "../types";
+import { computeResponseCost } from "../utils";
 // Application-specific imports removed
 
 export class GoogleAIAdapter implements AIVendorAdapter {
@@ -137,6 +139,19 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     const result = await genAI.generateContent(contentsRequest);
     const response = result.response;
 
+    let usage: UsageResponse | undefined = undefined
+
+    if (response.usageMetadata && this.inputTokenCost && this.outputTokenCost) {
+      const inputCost = computeResponseCost(response.usageMetadata.promptTokenCount, this.inputTokenCost);
+      const outputCost = computeResponseCost(response.usageMetadata.candidatesTokenCount, this.outputTokenCost);
+
+      usage = {
+        inputCost: inputCost,
+        outputCost: outputCost,
+        totalCost: inputCost + outputCost
+      }
+    }
+
     if (!response?.candidates?.[0]?.content?.parts) {
       console.error(
         "Invalid response structure from Gemini API:",
@@ -175,6 +190,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     return {
       role: "assistant",
       content: contentBlocks,
+      usage: usage,
     };
   }
 
@@ -241,6 +257,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
+      usage: response.usage,
     };
   }
 

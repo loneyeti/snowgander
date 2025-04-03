@@ -8,8 +8,10 @@ import {
   Chat, // Import from ../types now
   ChatResponse, // Import from ../types now
   ContentBlock, // Import from ../types now
-  MCPTool, // Import from ../types now
+  MCPTool,
+  UsageResponse, // Import from ../types now
 } from "../types";
+import { computeResponseCost } from "../utils";
 // Removed Prisma Model import
 // Removed incorrect Chat, ChatResponse, ContentBlock import path
 // Removed application-specific imports (updateUserUsage, getCurrentAPIUser)
@@ -114,6 +116,18 @@ export class AnthropicAdapter implements AIVendorAdapter {
         }),
     });
 
+    let usage: UsageResponse | undefined = undefined;
+
+    if (response.usage.input_tokens && response.usage.output_tokens && this.inputTokenCost && this.outputTokenCost) {
+      const inputCost = computeResponseCost(response.usage.input_tokens, this.inputTokenCost);
+      const outputCost = computeResponseCost(response.usage.output_tokens, this.outputTokenCost);
+      usage = {
+        inputCost: inputCost,
+        outputCost: outputCost,
+        totalCost: inputCost + outputCost,
+      }
+    }
+
     // Convert Anthropic response blocks to our ContentBlock format
     const contentBlocks: ContentBlock[] = [];
 
@@ -141,6 +155,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
     return {
       role: "assistant",
       content: contentBlocks,
+      usage: usage,
     };
   }
 
@@ -161,6 +176,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
+      usage: response.usage,
     };
   }
 

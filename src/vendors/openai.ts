@@ -10,9 +10,11 @@ import {
   ChatResponse,
   ContentBlock,
   MCPTool,
-  TextBlock, // Explicitly import TextBlock if needed for construction
+  TextBlock,
+  UsageResponse, // Explicitly import TextBlock if needed for construction
   // Import other ContentBlock types if needed for construction
 } from "../types";
+import { computeResponseCost } from "../utils";
 
 // Re-introduce the type alias for the input expected by client.responses.create
 // Based on documentation examples for message arrays.
@@ -65,6 +67,17 @@ export class OpenAIAdapter implements AIVendorAdapter {
       input: apiInput as any,
       // max_tokens and temperature are not direct params for this specific API endpoint
     });
+    let usage: UsageResponse | undefined = undefined; // Initialize usage
+
+    if (response.usage && this.inputTokenCost && this.outputTokenCost) {
+      const inputCost = computeResponseCost(response.usage.input_tokens, this.inputTokenCost);
+      const outputCost = computeResponseCost(response.usage.output_tokens, this.outputTokenCost);
+      usage = {
+        inputCost: inputCost,
+        outputCost: outputCost,
+        totalCost: inputCost + outputCost,
+      }
+    }
 
     // --- Refined Content Extraction ---
     let extractedText = "";
@@ -114,6 +127,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return {
       role: "assistant",
       content: responseBlock,
+      usage: usage
     };
   }
 
@@ -180,6 +194,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
+      usage: response.usage
     };
   }
 

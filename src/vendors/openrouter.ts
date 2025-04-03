@@ -9,8 +9,10 @@ import {
   Chat, // Import from ../types now
   ChatResponse, // Import from ../types now
   ContentBlock, // Import from ../types now
-  MCPTool, // Import from ../types now
+  MCPTool,
+  UsageResponse, // Import from ../types now
 } from "../types";
+import { computeResponseCost } from "../utils";
 // Removed Prisma Model import
 // Removed incorrect Chat, ChatResponse, ContentBlock import path
 // Removed application-specific imports (getCurrentAPIUser, updateUserUsage)
@@ -93,6 +95,18 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       temperature,
     });
 
+    let usage: UsageResponse | undefined = undefined; // Initialize usage
+
+    if (response.usage && this.inputTokenCost && this.outputTokenCost) {
+      const inputCost = computeResponseCost(response.usage.prompt_tokens, this.inputTokenCost);
+      const outputCost = computeResponseCost(response.usage.completion_tokens, this.outputTokenCost);
+      usage = {
+        inputCost: inputCost,
+        outputCost: outputCost,
+        totalCost: inputCost + outputCost,
+      }
+    }
+
     const content = response.choices[0]?.message?.content;
     if (!content) {
       throw new Error("No content received from OpenRouter");
@@ -111,7 +125,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     return {
       role: response.choices[0]?.message?.role || "assistant", // Default to assistant if role missing
       content: responseBlock,
-      // usage: usage // Optional
+      usage: usage
     };
   }
 
@@ -148,6 +162,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
+      usage: response.usage
     };
   }
 
