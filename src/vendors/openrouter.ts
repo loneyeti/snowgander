@@ -145,12 +145,15 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       messages: chat.responseHistory,
       maxTokens: chat.maxTokens || undefined,
       systemPrompt: chat.personaPrompt,
-      imageData: chat.imageData || undefined, // Pass base64 image data if available and model supports vision
+      visionUrl: chat.visionUrl || undefined, // Pass base64 image data if available and model supports vision
     };
 
     // Add the current prompt as the last user message if it exists
     if (chat.prompt) {
-      const promptContent: string | ContentBlock[] = chat.prompt;
+      const promptContent: ContentBlock[] = [{
+        type: "text",
+        text: chat.prompt,
+      }];
       options.messages = [
         ...options.messages,
         { role: "user", content: promptContent },

@@ -93,7 +93,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const { model, messages, maxTokens, systemPrompt, imageData } = options;
+    const { model, messages, maxTokens, systemPrompt, visionUrl } = options;
 
     const generationConfig: GenerationConfig = {};
     if (maxTokens) {
@@ -114,17 +114,17 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       ];
     }
 
-    if (imageData && this.isVisionCapable) {
+    if (visionUrl && this.isVisionCapable) {
       const lastMessage = formattedMessages[formattedMessages.length - 1];
       if (lastMessage && lastMessage.role === "user") {
         const mimeType = "image/png"; // Example
         lastMessage.parts.push({
-          inlineData: { mimeType: mimeType, data: imageData },
+          inlineData: { mimeType: mimeType, data: visionUrl },
         });
       } else {
         formattedMessages.push({
           role: "user",
-          parts: [{ inlineData: { mimeType: "image/png", data: imageData } }],
+          parts: [{ inlineData: { mimeType: "image/png", data: visionUrl } }],
         });
         console.warn(
           "Image data provided but no suitable user message found to append to. Created new message."
@@ -195,43 +195,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
   }
 
   async generateImage(chat: Chat): Promise<string> {
-    console.warn(
-      "GoogleAIAdapter.generateImage attempting generation via generateResponse."
-    );
-
-    const { prompt, model, maxTokens } = chat;
-    if (!prompt) {
-      throw new Error("Prompt is required for image generation");
-    }
-
-    const imageGenOptions: AIRequestOptions = {
-      model: model,
-      messages: [{ role: "user", content: prompt }],
-      maxTokens: maxTokens || undefined,
-      systemPrompt: "Generate an image based on the prompt.",
-    };
-
-    const response = await this.generateResponse(imageGenOptions);
-
-    // Correctly check if content is an array before using find
-    let imagePart: ImageDataBlock | undefined;
-    if (Array.isArray(response.content)) {
-      imagePart = response.content.find(
-        (block): block is ImageDataBlock => block.type === "image_data"
-      );
-    }
-
-    if (imagePart?.base64Data) {
-      return `data:${imagePart.mimeType};base64,${imagePart.base64Data}`;
-    }
-
-    console.error(
-      "Image generation response did not contain image data:",
-      JSON.stringify(response.content)
-    );
-    throw new Error(
-      "Image generation failed or no image data returned by the model."
-    );
+    console.error("Google image generation is inline/multimodal");
+    throw new Error("Error generating image.");
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
@@ -240,12 +205,17 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       messages: chat.responseHistory,
       maxTokens: chat.maxTokens || undefined,
       systemPrompt: chat.personaPrompt,
-      imageData: chat.imageData || undefined,
+      visionUrl: chat.visionUrl|| undefined,
     };
 
     if (chat.prompt) {
       // Ensure content is treated as an array if needed, or simple string
-      const promptContent: string | ContentBlock[] = chat.prompt;
+      const promptContent: ContentBlock[] = [
+        {
+          type: "text",
+          text: chat.prompt,
+        }
+      ]
       options.messages = [
         ...options.messages,
         { role: "user", content: promptContent },

@@ -1,16 +1,43 @@
 {
-  "name": "@snowgoose/ai-vendors",
-  "version": "1.0.0",
-  "description": "Reusable AI vendor adapters for Snowgoose project",
+  "name": "snowgander",
+  "version": "0.0.3",
+  "description": "Universal interface for disperate AI vendors",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "npm run build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/troyharris/snowgander.git"
+  },
+  "bugs": {
+    "url": "https://github.com/troyharris/snowgander/issues"
+  },
+  "homepage": "https://github.com/troyharris/snowgander#readme",
+  "keywords": [
+    "ai",
+    "llm",
+    "anthropic",
+    "openai",
+    "google",
+    "gemini",
+    "claude",
+    "gpt",
+    "openrouter",
+    "adapter",
+    "vendor"
+  ],
+  "author": "troyharris1",
+  "license": "MIT",
+  "private": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@google/generative-ai": "^0.24.0",

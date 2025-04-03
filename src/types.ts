@@ -52,7 +52,7 @@ export type ContentBlock =
 // Content of a chat response can either be plain text or ContentBlock array
 export interface ChatResponse {
   role: string;
-  content: string | ContentBlock[];
+  content: ContentBlock[];
   usage?: UsageResponse;
 }
 
@@ -63,7 +63,7 @@ export interface Chat {
   outputFormatId: number; // ID of the desired output format
   mcpToolId?: number; // Optional ID of an MCP tool being used
   renderTypeName: string; // Name of the rendering type for output
-  imageData: string | null; // Base64 image data for vision input (or null)
+  visionUrl: string | null; // URL for vision input (or null)
   model: string; // Identifier for the AI model being used (maps to ModelConfig.apiName)
   modelId: number; // Original ID from the database (may or may not be needed by adapter)
   prompt: string; // The current user prompt/input text
@@ -86,7 +86,7 @@ export interface MCPTool {
 // Represents a single message in a chat history or request
 export interface Message {
   role: string; // e.g., 'user', 'assistant', 'system'
-  content: string | ContentBlock[]; // Content can be simple text or structured blocks
+  content: ContentBlock[]; // Content can be simple text or structured blocks
 }
 
 export interface UsageResponse {
@@ -98,7 +98,7 @@ export interface UsageResponse {
 // Represents the structured response from an AI vendor adapter
 export interface AIResponse {
   role: string; // Typically 'assistant'
-  content: string | ContentBlock[]; // The generated content
+  content: ContentBlock[]; // The generated content
   // Optionally include usage stats if adapters provide them
   usage?: UsageResponse;
 }
@@ -110,7 +110,7 @@ export interface AIRequestOptions {
   maxTokens?: number; // Max tokens for the response
   temperature?: number; // Sampling temperature
   systemPrompt?: string; // System-level instructions
-  imageData?: string; // Optional base64 image data for vision
+  visionUrl?: string; // Optional base64 image data for vision
   modelId?: number; // Optional original model ID (if needed by adapter logic)
   thinkingMode?: boolean; // Flag to enable thinking mode (if supported)
   budgetTokens?: number; // Token budget for thinking mode

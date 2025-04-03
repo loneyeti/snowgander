@@ -161,16 +161,16 @@ export class OpenAIAdapter implements AIVendorAdapter {
       currentMessageContentBlocks.push({ type: "text", text: chat.prompt });
     }
 
-    if (chat.imageData && this.isVisionCapable) {
+    if (chat.visionUrl && this.isVisionCapable) {
       const imageUrlContent: ContentBlock = {
         type: "image_url",
         image_url: {
-          url: chat.imageData,
+          url: chat.visionUrl,
           detail: "low",
         },
       } as any;
       currentMessageContentBlocks.push(imageUrlContent);
-    } else if (chat.imageData && !this.isVisionCapable) {
+    } else if (chat.visionUrl && !this.isVisionCapable) {
       console.warn(
         "Image data provided to a non-vision capable model. Ignoring image."
       );
