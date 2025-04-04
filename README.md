@@ -73,15 +73,13 @@ if (process.env.OPENROUTER_API_KEY) {
     import {
       AIVendorFactory,
       ModelConfig,
-      Chat, // Assuming Chat type is defined in your application or another shared package
+      Chat,
       AIRequestOptions,
       AIResponse,
-      ChatResponse, // Assuming ChatResponse is defined elsewhere or use AIResponse
+      ChatResponse,
       AIVendorAdapter,
     } from "snowgander";
     ```
-
-    _Note: `Chat` and `ChatResponse` were mentioned in the previous README but are not explicitly exported by this library according to `src/index.ts`. You might need to define these or use the exported `Message[]` and `AIResponse` types._
 
 2.  **Prepare `ModelConfig`:** Create a `ModelConfig` object containing the necessary details about the specific AI model being used (e.g., fetched from a database or configuration file).
     ```typescript
@@ -92,8 +90,8 @@ if (process.env.OPENROUTER_API_KEY) {
       isVisionCapable: modelData.isVision,
       isImageGenerationCapable: modelData.isImageGeneration,
       isThinkingCapable: modelData.isThinking,
-      inputTokenCost: modelData.inputTokenCost ?? undefined, // Cost per 1k tokens
-      outputTokenCost: modelData.outputTokenCost ?? undefined, // Cost per 1k tokens
+      inputTokenCost: modelData.inputTokenCost ?? undefined, // Cost per 1m tokens
+      outputTokenCost: modelData.outputTokenCost ?? undefined, // Cost per 1m tokens
     };
     ```
 3.  **Get Adapter:** Use the factory to get the appropriate adapter instance.

@@ -279,10 +279,28 @@ export class OpenAIAdapter implements AIVendorAdapter {
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
-    const historyMessages: Message[] = chat.responseHistory.map((res) => ({
-      role: res.role,
-      content: res.content,
-    }));
+    // Ensure history message content is always ContentBlock[]
+    const historyMessages: Message[] = chat.responseHistory.map((res) => {
+      let contentBlocks: ContentBlock[];
+      if (typeof res.content === "string") {
+        // If content is a simple string, wrap it in a TextBlock array
+        contentBlocks = [{ type: "text", text: res.content }];
+      } else if (Array.isArray(res.content)) {
+        // Assume it's already ContentBlock[] if it's an array
+        // TODO: Add validation here if stricter type checking is needed
+        contentBlocks = res.content;
+      } else {
+        // Handle unexpected content types (e.g., log a warning, skip message)
+        console.warn(
+          `Unexpected content type in response history for role '${res.role}'. Skipping content.`
+        );
+        contentBlocks = []; // Or handle as appropriate
+      }
+      return {
+        role: res.role,
+        content: contentBlocks,
+      };
+    });
 
     let currentMessageContentBlocks: ContentBlock[] = [];
 
