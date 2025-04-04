@@ -78,6 +78,11 @@ export class AnthropicAdapter implements AIVendorAdapter {
               thinking: string;
               signature: string;
             }
+          | {
+              type: "tool_result"; // Add Anthropic's tool_result type
+              tool_use_id: string; // <<< Corrected type to string
+              content: string | Array<{ type: "text"; text: string }>; // Anthropic expects string or text block array
+            }
         >
       >((acc, block) => {
         if (block.type === "text") {
@@ -91,7 +96,25 @@ export class AnthropicAdapter implements AIVendorAdapter {
             thinking: block.thinking,
             signature: block.signature,
           });
+        } else if (block.type === "tool_result" && msg.role === "user") {
+          // Handle tool_result specifically for user messages
+          // Anthropic expects tool_result content to be a string or an array of text blocks.
+          // We'll convert our ContentBlock[] to a simple string for now.
+          // TODO: Improve this to handle potential multiple text blocks in tool_result.content if needed.
+          const toolResultContent = block.content
+            .map((c) => (c.type === "text" ? c.text : JSON.stringify(c)))
+            .join("\n");
+
+          acc.push({
+            type: "tool_result",
+            tool_use_id: String(block.toolUseId), // Convert number to string
+            content: toolResultContent, // Send as string for simplicity
+            // Alternatively, format as [{ type: 'text', text: toolResultContent }] if preferred
+          });
         }
+        // Note: We are intentionally skipping 'tool_use' blocks when sending *to* Anthropic,
+        // as those are generated *by* the assistant, not sent *by* the user.
+        // We also skip image blocks as Anthropic vision handling is different.
         return acc;
       }, []);
 
