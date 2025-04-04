@@ -11,17 +11,27 @@ import {
   ContentBlock,
   MCPTool,
   TextBlock,
-  UsageResponse, // Explicitly import TextBlock if needed for construction
+  UsageResponse,
+  ImageDataBlock, // Correctly import ImageDataBlock
+  ImageBlock,     // Correctly import ImageBlock
   // Import other ContentBlock types if needed for construction
 } from "../types";
+// Removed duplicate } from "../types";
 import { computeResponseCost } from "../utils";
 
-// Re-introduce the type alias for the input expected by client.responses.create
-// Based on documentation examples for message arrays.
-type OpenAIInputItem = {
-  role: string; // e.g., "user", "developer", "assistant"
-  content: string | ContentBlock[]; // Content can be a string or array of blocks
+// --- Re-introduce Custom Types for OpenAI /v1/responses Input Structure ---
+
+// Represents the content parts we construct for the API call's message content array
+type OpenAIMessageContentPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+
+// Represents a single message structure we construct for the API call's 'input' array
+type OpenAIMessageInput = {
+  role: "user" | "assistant" | "developer"; // Roles for input messages
+  content: OpenAIMessageContentPart[]; // Content is always an array of parts for the API
 };
+
 
 export class OpenAIAdapter implements AIVendorAdapter {
   private client: OpenAI;
@@ -50,20 +60,81 @@ export class OpenAIAdapter implements AIVendorAdapter {
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
     const { model, messages, systemPrompt } = options;
 
-    // Map generic Message format to OpenAI's expected input format array
-    // Use the OpenAIInputItem type alias
-    const apiInput: OpenAIInputItem[] = messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content, // Pass content directly. Assumes structure is compatible.
-    }));
+    // Map internal Message format to OpenAI's responses.create input format
+    // Use our custom types that reflect the expected API structure.
+    const apiInput: OpenAIMessageInput[] = messages
+      .map((msg): OpenAIMessageInput | null => {
+        // Map internal roles to OpenAI's expected input roles
+        let role: "user" | "assistant" | "developer"; // Roles for input messages
+   switch (msg.role) {
+     case "user":
+     case "assistant":
+       role = msg.role;
+       break;
+     case "system": // System prompts are handled by 'instructions', skip here
+       console.warn(
+         "System role message found in 'messages' array; use 'systemPrompt'/'instructions' instead. Skipping message."
+       );
+       return null;
+     default:
+       console.warn(`Unsupported role '${msg.role}' mapped to 'user'.`);
+       role = "user"; // Defaulting unrecognized roles
+   }
+   // Removed the extra closing brace here
 
-    // Remove the incorrect type assertion. Pass the structured array directly.
-    // const typedApiInput = apiInput as OpenAI.Responses.ResponseInput; // Incorrect type
+   // Map internal ContentBlock array to OpenAI's expected input content part array
+   // Ensure msg.content is treated as an array
+   if (!Array.isArray(msg.content)) {
+     console.warn(`Message content is not an array for role '${role}'. Skipping message.`);
+     return null;
+   }
+
+   const apiContentParts = msg.content
+     .map((block): OpenAIMessageInput['content'][number] | null => {
+       if (block.type === "text") {
+         // Map TextBlock to input_text part
+         return { type: "input_text", text: block.text };
+       } else if (block.type === "image" && this.isVisionCapable) {
+         // Map ImageBlock (URL) to input_image part
+         return { type: "input_image", image_url: { url: block.url, detail: "auto" } };
+       } else if (block.type === "image_data" && this.isVisionCapable) {
+         // Map ImageDataBlock (base64) to data URL for input_image part
+         return { type: "input_image", image_url: { url: `data:${block.mimeType};base64,${block.base64Data}`, detail: "auto" } };
+       } else if ((block.type === "image" || block.type === "image_data") && !this.isVisionCapable) {
+         console.warn(`Image block provided for non-vision model '${model}'. Skipping image.`);
+         return null;
+       } else if (block.type === "thinking" || block.type === "redacted_thinking") {
+         return null; // Skip thinking blocks for OpenAI input
+       }
+       console.warn(`Unsupported content block type '${block.type}' for OpenAI input mapping.`);
+       return null;
+       // Use our custom type for the content parts
+     })
+     .filter((part): part is OpenAIMessageContentPart => part !== null); // Filter out nulls
+
+   // If no valid content parts were generated for this message, skip the message
+   if (apiContentParts.length === 0) {
+     console.warn(`Skipping message with role '${role}' due to no mappable content.`);
+     return null;
+   }
+
+   // Construct the final message object using our custom type
+   return {
+        role: role,
+        content: apiContentParts,
+   };
+ })
+ .filter((msg): msg is OpenAIMessageInput => msg !== null); // Filter out any skipped messages
+
+ // Check if apiInput is empty after filtering
+ if (apiInput.length === 0) {
+    throw new Error("No valid messages could be mapped for the OpenAI API request.");
+ }
 
     const response = await this.client.responses.create({
       model: model,
       instructions: systemPrompt,
-      // Cast input to 'any' to bypass strict SDK type checking issues for array input
+      // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: apiInput as any,
       // max_tokens and temperature are not direct params for this specific API endpoint
     });
@@ -162,14 +233,12 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
 
     if (chat.visionUrl && this.isVisionCapable) {
-      const imageUrlContent: ContentBlock = {
-        type: "image_url",
-        image_url: {
-          url: chat.visionUrl,
-          detail: "low",
-        },
-      } as any;
-      currentMessageContentBlocks.push(imageUrlContent);
+      // Use the correct internal type 'ImageBlock' for URL-based images
+      const imageBlock: ImageBlock = {
+        type: "image", // Use 'image' type for URL
+        url: chat.visionUrl,
+      };
+      currentMessageContentBlocks.push(imageBlock);
     } else if (chat.visionUrl && !this.isVisionCapable) {
       console.warn(
         "Image data provided to a non-vision capable model. Ignoring image."
