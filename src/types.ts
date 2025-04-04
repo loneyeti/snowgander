@@ -43,13 +43,14 @@ export interface ImageDataBlock {
 
 export interface ToolUseBlock {
   type: "tool_use";
+  id?: string; // Add optional ID field from vendor API (e.g., Anthropic)
   name: string;
-  input: string;
+  input: string; // Keep as string representation of input JSON
 }
 
 export interface ToolResultBlock {
   type: "tool_result";
-  toolUseId: number;
+  toolUseId: string; // Changed from number to string to match vendor API IDs
   content: ContentBlock[];
 }
 

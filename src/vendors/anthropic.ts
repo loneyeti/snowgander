@@ -107,7 +107,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
 
           acc.push({
             type: "tool_result",
-            tool_use_id: String(block.toolUseId), // Convert number to string
+            tool_use_id: block.toolUseId, // Use the string ID directly
             content: toolResultContent, // Send as string for simplicity
             // Alternatively, format as [{ type: 'text', text: toolResultContent }] if preferred
           });
@@ -182,9 +182,10 @@ export class AnthropicAdapter implements AIVendorAdapter {
           text: block.text,
         });
       } else if (block.type === "tool_use") {
-        // Map Anthropic tool_use to our ToolUseBlock
+        // Map Anthropic tool_use to our ToolUseBlock, including the ID
         contentBlocks.push({
           type: "tool_use",
+          id: block.id, // Capture the tool use ID from Anthropic
           name: block.name,
           input: JSON.stringify(block.input), // Stringify the input object
         });
