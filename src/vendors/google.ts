@@ -139,17 +139,23 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     const result = await genAI.generateContent(contentsRequest);
     const response = result.response;
 
-    let usage: UsageResponse | undefined = undefined
+    let usage: UsageResponse | undefined = undefined;
 
     if (response.usageMetadata && this.inputTokenCost && this.outputTokenCost) {
-      const inputCost = computeResponseCost(response.usageMetadata.promptTokenCount, this.inputTokenCost);
-      const outputCost = computeResponseCost(response.usageMetadata.candidatesTokenCount, this.outputTokenCost);
+      const inputCost = computeResponseCost(
+        response.usageMetadata.promptTokenCount,
+        this.inputTokenCost
+      );
+      const outputCost = computeResponseCost(
+        response.usageMetadata.candidatesTokenCount,
+        this.outputTokenCost
+      );
 
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
-        totalCost: inputCost + outputCost
-      }
+        totalCost: inputCost + outputCost,
+      };
     }
 
     if (!response?.candidates?.[0]?.content?.parts) {
@@ -204,8 +210,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       model: chat.model,
       messages: chat.responseHistory,
       maxTokens: chat.maxTokens || undefined,
-      systemPrompt: chat.personaPrompt,
-      visionUrl: chat.visionUrl|| undefined,
+      systemPrompt: chat.systemPrompt,
+      visionUrl: chat.visionUrl || undefined,
     };
 
     if (chat.prompt) {
@@ -214,8 +220,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         {
           type: "text",
           text: chat.prompt,
-        }
-      ]
+        },
+      ];
       options.messages = [
         ...options.messages,
         { role: "user", content: promptContent },

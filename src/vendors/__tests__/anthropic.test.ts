@@ -383,16 +383,12 @@ describe("AnthropicAdapter", () => {
       // Use Partial for easier test setup
       model: mockClaude3Opus.apiName,
       responseHistory: [],
-      personaId: 1,
-      outputFormatId: 1,
-      renderTypeName: "text",
       visionUrl: null,
-      modelId: 1,
       prompt: "User prompt",
       imageURL: null,
       maxTokens: 100,
       budgetTokens: null, // Thinking disabled by default
-      personaPrompt: "System prompt",
+      systemPrompt: "System prompt",
     };
 
     beforeEach(() => {
@@ -449,7 +445,7 @@ describe("AnthropicAdapter", () => {
         ],
         maxTokens: chatWithHistory.maxTokens,
         budgetTokens: undefined, // Thinking disabled
-        systemPrompt: chatWithHistory.personaPrompt,
+        systemPrompt: chatWithHistory.systemPrompt,
         thinkingMode: false, // Explicitly false when budgetTokens is null/0
       });
     });

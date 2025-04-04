@@ -189,7 +189,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       messages: messagesToSend, // Pass the combined messages
       maxTokens: chat.maxTokens || undefined,
       budgetTokens: chat.budgetTokens || undefined,
-      systemPrompt: chat.personaPrompt || undefined,
+      systemPrompt: chat.systemPrompt || undefined,
       thinkingMode: (chat.budgetTokens ?? 0) > 0,
     });
 

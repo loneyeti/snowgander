@@ -98,13 +98,19 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     let usage: UsageResponse | undefined = undefined; // Initialize usage
 
     if (response.usage && this.inputTokenCost && this.outputTokenCost) {
-      const inputCost = computeResponseCost(response.usage.prompt_tokens, this.inputTokenCost);
-      const outputCost = computeResponseCost(response.usage.completion_tokens, this.outputTokenCost);
+      const inputCost = computeResponseCost(
+        response.usage.prompt_tokens,
+        this.inputTokenCost
+      );
+      const outputCost = computeResponseCost(
+        response.usage.completion_tokens,
+        this.outputTokenCost
+      );
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
         totalCost: inputCost + outputCost,
-      }
+      };
     }
 
     const content = response.choices[0]?.message?.content;
@@ -125,7 +131,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     return {
       role: response.choices[0]?.message?.role || "assistant", // Default to assistant if role missing
       content: responseBlock,
-      usage: usage
+      usage: usage,
     };
   }
 
@@ -144,16 +150,18 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       model: chat.model, // This is the OpenRouter model identifier (e.g., "openai/gpt-4-turbo")
       messages: chat.responseHistory,
       maxTokens: chat.maxTokens || undefined,
-      systemPrompt: chat.personaPrompt,
+      systemPrompt: chat.systemPrompt,
       visionUrl: chat.visionUrl || undefined, // Pass base64 image data if available and model supports vision
     };
 
     // Add the current prompt as the last user message if it exists
     if (chat.prompt) {
-      const promptContent: ContentBlock[] = [{
-        type: "text",
-        text: chat.prompt,
-      }];
+      const promptContent: ContentBlock[] = [
+        {
+          type: "text",
+          text: chat.prompt,
+        },
+      ];
       options.messages = [
         ...options.messages,
         { role: "user", content: promptContent },
@@ -165,7 +173,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
-      usage: response.usage
+      usage: response.usage,
     };
   }
 

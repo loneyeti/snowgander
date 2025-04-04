@@ -41,13 +41,33 @@ export interface ImageDataBlock {
   base64Data: string;
 }
 
+export interface ToolUseBlock {
+  type: "tool_use";
+  name: string;
+  input: string;
+}
+
+export interface ToolResultBlock {
+  type: "tool_result";
+  toolUseId: number;
+  content: ContentBlock[];
+}
+
 // Define the ContentBlock union type *once*, including all variants
 export type ContentBlock =
   | ThinkingBlock
   | RedactedThinkingBlock
   | TextBlock
   | ImageBlock // Represents URL-based images
-  | ImageDataBlock; // Represents raw image data
+  | ImageDataBlock // Represents raw image data
+  | ToolUseBlock
+  | ToolResultBlock;
+
+export interface MCPAvailableTool {
+  name: string;
+  description: string;
+  input_schema: string;
+}
 
 // Content of a chat response can either be plain text or ContentBlock array
 export interface ChatResponse {
@@ -59,18 +79,13 @@ export interface ChatResponse {
 // Represents the state/data needed for a chat interaction
 export interface Chat {
   responseHistory: ChatResponse[]; // History of messages in the chat
-  personaId: number; // ID of the persona being used
-  outputFormatId: number; // ID of the desired output format
-  mcpToolId?: number; // Optional ID of an MCP tool being used
-  renderTypeName: string; // Name of the rendering type for output
   visionUrl: string | null; // URL for vision input (or null)
   model: string; // Identifier for the AI model being used (maps to ModelConfig.apiName)
-  modelId: number; // Original ID from the database (may or may not be needed by adapter)
   prompt: string; // The current user prompt/input text
   imageURL: string | null; // URL of an image (alternative to imageData, maybe for display?)
   maxTokens: number | null; // Max tokens for the response
   budgetTokens: number | null; // Token budget for thinking mode
-  personaPrompt?: string; // The actual system prompt text from the persona
+  systemPrompt?: string; // The actual system prompt text from the persona
 }
 
 // Represents an MCP Tool configuration
@@ -90,9 +105,9 @@ export interface Message {
 }
 
 export interface UsageResponse {
-  inputCost: number,
-  outputCost: number,
-  totalCost: number,
+  inputCost: number;
+  outputCost: number;
+  totalCost: number;
 }
 
 // Represents the structured response from an AI vendor adapter

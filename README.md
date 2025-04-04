@@ -116,48 +116,61 @@ Here's a typical workflow:
     );
     ```
 
-4.  **Use `sendChat`:** Manage conversation history and interact with the model.
+4.  **Use `sendChat`:** Manage conversation state and interact with the model using the `Chat` object.
 
     ```typescript
-    // Example Chat object (manage this in your application state)
+    // Example Chat object structure (manage this in your application state)
+    // Populate fields based on your application's context (user, settings, history)
     let chat: Chat = {
-      messages: [
-        {
-          role: "system",
-          content: [{ type: "text", text: "You are a helpful assistant." }],
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Hello! What can you do?" },
-            // Add image content if model supports vision and adapter handles it:
-            // { type: 'imageData', mimeType: 'image/png', data: 'base64encoded...' }
-          ],
-        },
+      // --- Core Identifiers ---
+      model: modelConfig.apiName, // From the ModelConfig prepared earlier
+
+      // --- Conversation State ---
+      responseHistory: [
+        // Previous turns in the conversation would be loaded here
+        // Example:
+        // { role: 'user', content: [{ type: 'text', text: 'Previous question...' }], usage: {...} },
+        // { role: 'assistant', content: [{ type: 'text', text: 'Previous answer...' }], usage: {...} }
       ],
-      // Optional parameters can be added here or passed directly to sendChat
-      // temperature: 0.7,
-      // maxTokens: 150,
+      prompt: "Hello! What can you do?", // The current user input
+
+      // --- Optional Parameters & Inputs ---
+      systemPrompt: "You are a helpful assistant.", // System prompt (if applicable)
+      visionUrl: null, // Set to image URL if providing vision input
+      imageURL: null, // Set to image URL (potentially for display?)
+      maxTokens: 150, // Optional: Max tokens for this specific turn
+      budgetTokens: null, // Optional: Token budget for thinking mode
     };
 
+    // Add image data if needed (using visionUrl or potentially modifying prompt/history)
+    // if (modelConfig.isVisionCapable && imageBase64Data) {
+    //   // Adapters might expect vision input differently (e.g., via visionUrl,
+    //   // or potentially as an ImageDataBlock within the prompt/history - check adapter specifics)
+    //   // Example using visionUrl (if adapter supports it):
+    //   // chat.visionUrl = `data:image/png;base64,${imageBase64Data}`;
+    // }
+
     try {
-      // Send the entire chat history to the adapter
+      // Send the Chat object to the adapter
+      // The second argument allows overriding parameters like temperature for this specific call
       const chatResponse: ChatResponse = await adapter.sendChat(chat, {
-        // Override or add parameters for this specific call if needed
-        // temperature: 0.8,
+        temperature: 0.8, // Example override
       });
 
-      // Update your chat history with the assistant's response
-      chat.messages.push(chatResponse.message);
+      // IMPORTANT: Update your application's chat state with the response
+      // Add chatResponse to chat.responseHistory for the next turn
+      chat.responseHistory.push(chatResponse);
+      // Clear the prompt for the next user input, etc.
+      chat.prompt = "";
 
       console.log(
         "Assistant Response:",
-        JSON.stringify(chatResponse.message.content, null, 2)
+        JSON.stringify(chatResponse.content, null, 2) // Note: chatResponse itself is the message
       );
       if (chatResponse.usage) {
-        console.log("Estimated Cost:", chatResponse.usage.estimatedCost);
-        console.log("Input Tokens:", chatResponse.usage.inputTokens);
-        console.log("Output Tokens:", chatResponse.usage.outputTokens);
+        console.log("Total Cost:", chatResponse.usage.totalCost);
+        console.log("Input Cost:", chatResponse.usage.inputCost);
+        console.log("Output Cost:", chatResponse.usage.outputCost);
       }
     } catch (error) {
       console.error("Error sending chat:", error);

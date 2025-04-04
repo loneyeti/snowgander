@@ -279,18 +279,14 @@ describe("OpenRouterAdapter", () => {
     // Added missing required properties
     const mockChat: Chat = {
       model: mockModelConfig.apiName,
-      personaPrompt: "Act like a pirate.",
+      systemPrompt: "Act like a pirate.",
       responseHistory: [
         { role: "user", content: [{ type: "text", text: "Ahoy!" }] },
         { role: "assistant", content: [{ type: "text", text: "Avast ye!" }] },
       ],
       prompt: "Where's the treasure?",
       maxTokens: 100,
-      personaId: 1,
-      outputFormatId: 1,
-      renderTypeName: "default",
       visionUrl: null, // Added null value
-      modelId: 1,
       imageURL: null,
       budgetTokens: null, // Added null value
     };
@@ -321,7 +317,7 @@ describe("OpenRouterAdapter", () => {
         ],
         // Reflect adapter's mapping: null -> undefined
         maxTokens: mockChat.maxTokens === null ? undefined : mockChat.maxTokens,
-        systemPrompt: mockChat.personaPrompt,
+        systemPrompt: mockChat.systemPrompt,
         visionUrl: undefined, // Correctly maps null from mockChat.visionUrl to undefined
         // Add other mapped properties if the adapter uses them (e.g., modelId, budgetTokens)
         // modelId: mockChat.modelId, // Example if needed
@@ -346,7 +342,7 @@ describe("OpenRouterAdapter", () => {
           chatWithoutPrompt.maxTokens === null
             ? undefined
             : chatWithoutPrompt.maxTokens,
-        systemPrompt: chatWithoutPrompt.personaPrompt,
+        systemPrompt: chatWithoutPrompt.systemPrompt,
         visionUrl: undefined, // Correctly maps null to undefined
         // modelId: chatWithoutPrompt.modelId, // Example if needed
         // budgetTokens: undefined, // Example if needed
@@ -372,11 +368,7 @@ describe("OpenRouterAdapter", () => {
         model: mockModelConfig.apiName,
         prompt: "Generate an image",
         responseHistory: [],
-        personaId: 1,
-        outputFormatId: 1,
-        renderTypeName: "default",
         visionUrl: null,
-        modelId: 1,
         imageURL: null,
         maxTokens: null, // Use null as per type def
         budgetTokens: null,
@@ -394,11 +386,7 @@ describe("OpenRouterAdapter", () => {
         model: mockModelConfig.apiName,
         prompt: "Use a tool",
         responseHistory: [],
-        personaId: 1,
-        outputFormatId: 1,
-        renderTypeName: "default",
         visionUrl: null,
-        modelId: 1,
         imageURL: null,
         maxTokens: null, // Use null as per type def
         budgetTokens: null,

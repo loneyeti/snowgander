@@ -333,7 +333,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       messages: historyMessages,
       maxTokens: chat.maxTokens || undefined,
       temperature: undefined,
-      systemPrompt: chat.personaPrompt,
+      systemPrompt: chat.systemPrompt,
     });
 
     return {

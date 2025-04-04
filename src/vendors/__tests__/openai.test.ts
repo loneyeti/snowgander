@@ -434,16 +434,12 @@ describe("OpenAIAdapter", () => {
       // Use Partial for easier test setup
       model: mockVisionModel.apiName,
       responseHistory: [],
-      personaId: 1,
-      outputFormatId: 1,
-      renderTypeName: "text",
       visionUrl: null,
-      modelId: 1,
       prompt: "User prompt",
       imageURL: null,
       maxTokens: 100,
       budgetTokens: null,
-      personaPrompt: "System prompt",
+      systemPrompt: "System prompt",
     };
 
     beforeEach(() => {
@@ -500,7 +496,7 @@ describe("OpenAIAdapter", () => {
         ],
         maxTokens: chatWithHistory.maxTokens,
         temperature: undefined, // Not set in baseChat
-        systemPrompt: chatWithHistory.personaPrompt,
+        systemPrompt: chatWithHistory.systemPrompt,
       });
     });
 
@@ -529,7 +525,7 @@ describe("OpenAIAdapter", () => {
         ],
         maxTokens: chatWithVision.maxTokens,
         temperature: undefined, // As it wasn't set in baseChat or chatWithVision
-        systemPrompt: chatWithVision.personaPrompt,
+        systemPrompt: chatWithVision.systemPrompt,
         // visionUrl is correctly omitted here by the sendChat implementation
       });
     });
