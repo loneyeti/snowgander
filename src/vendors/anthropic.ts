@@ -197,25 +197,71 @@ export class AnthropicAdapter implements AIVendorAdapter {
     // Format MCP tools for Anthropic API if available
     let formattedTools: AnthropicTool[] | undefined = undefined;
     if (chat.mcpAvailableTools && chat.mcpAvailableTools.length > 0) {
-      formattedTools = chat.mcpAvailableTools.map((tool) => {
-        try {
-          return {
-            name: tool.name,
-            description: tool.description,
-            input_schema: JSON.parse(tool.input_schema), // Parse the schema string
-          };
-        } catch (error) {
+      formattedTools = chat.mcpAvailableTools.map((tool): AnthropicTool => {
+        // Ensure the map callback returns AnthropicTool
+        // Define a fallback schema (JSON Schema object)
+        const fallbackSchema: Record<string, any> = {
+          // Use Record<string, any> for generic JSON schema
+          type: "object",
+          properties: {},
+        };
+        let schemaObject: Record<string, any>; // Use Record<string, any>
+
+        if (typeof tool.input_schema === "string") {
+          try {
+            const parsedSchema = JSON.parse(tool.input_schema);
+            // Basic validation to ensure it looks like an InputSchema
+            if (
+              typeof parsedSchema === "object" &&
+              parsedSchema !== null &&
+              "type" in parsedSchema
+            ) {
+              schemaObject = parsedSchema; // Assign directly
+            } else {
+              console.error(
+                `Parsed input_schema string for tool ${tool.name} is not a valid schema object.`,
+                parsedSchema
+              );
+              schemaObject = fallbackSchema;
+            }
+          } catch (error) {
+            console.error(
+              `Error parsing input_schema string for tool ${tool.name}:`,
+              error
+            );
+            schemaObject = fallbackSchema; // Use fallback on parsing error
+          }
+        } else if (
+          typeof tool.input_schema === "object" &&
+          tool.input_schema !== null
+        ) {
+          // Basic validation for existing object
+          if ("type" in tool.input_schema) {
+            schemaObject = tool.input_schema; // Assign directly
+          } else {
+            console.error(
+              `Provided input_schema object for tool ${tool.name} is missing 'type' property.`,
+              tool.input_schema
+            );
+            schemaObject = fallbackSchema;
+          }
+        } else {
           console.error(
-            `Error parsing input_schema for tool ${tool.name}:`,
-            error
+            `Invalid input_schema type for tool ${
+              tool.name
+            }: expected string or object, got ${typeof tool.input_schema}`
           );
-          // Return a minimal valid schema or handle error appropriately
-          return {
-            name: tool.name,
-            description: tool.description,
-            input_schema: { type: "object", properties: {} }, // Fallback schema
-          };
+          schemaObject = fallbackSchema; // Use fallback for invalid types
         }
+
+        // Always return a valid AnthropicTool structure
+        return {
+          name: tool.name,
+          description: tool.description,
+          // Cast schemaObject to 'any' to satisfy the strict InputSchema type expected by AnthropicTool,
+          // relying on our runtime checks to ensure it has the necessary 'type' property.
+          input_schema: schemaObject as any,
+        };
       });
     }
 
