@@ -1,0 +1,29 @@
+# Cline Rules for Snowgander Project
+
+This file captures key learnings, patterns, and preferences for the AI Vendor Abstraction Layer project.
+
+## Core Principles & Patterns
+
+- **Adapter + Factory:** The core architecture relies on the Adapter pattern (`AIVendorAdapter`) for vendor implementation and the Factory pattern (`AIVendorFactory`) for instantiation.
+- **ContentBlocks:** Use the `ContentBlock[]` system (`types.ts`) consistently for all message content (input/output) to ensure uniformity across adapters.
+- **Configuration Injection:** Vendor/model configuration (`VendorConfig`, `ModelConfig`) should be injected into the factory/adapters, not hardcoded.
+- **Capability Flags:** Rely on adapter capability flags (`isVisionCapable`, etc.) to determine supported features.
+- **Cost Calculation:** Utilize the `computeResponseCost` utility and `UsageResponse` for standardized cost tracking.
+
+## Current Limitations / Areas for Attention
+
+- **MCP Tool Handling:** Currently delegated entirely to the consuming application. Adapters throw errors for `sendMCPChat`. This is a major design point to be aware of.
+- **Multimodal Input:** Handling of image inputs (`ImageDataBlock`, `ImageBlock`) varies significantly between adapters and requires careful attention.
+- **OpenAI Endpoint:** The `OpenAIAdapter` uses `client.responses.create`, which might differ from the more common `client.chat.completions.create`.
+
+## User Preferences & Workflow
+
+- _(To be filled in as learned)_
+
+## Tool Usage Patterns
+
+- _(To be filled in as learned)_
+
+## Project Evolution Notes
+
+- **2025-04-03:** Initial Memory Bank and `.clinerules` created based on code review. Focus is on establishing baseline documentation.

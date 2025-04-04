@@ -118,14 +118,25 @@ export class AnthropicAdapter implements AIVendorAdapter {
 
     let usage: UsageResponse | undefined = undefined;
 
-    if (response.usage.input_tokens && response.usage.output_tokens && this.inputTokenCost && this.outputTokenCost) {
-      const inputCost = computeResponseCost(response.usage.input_tokens, this.inputTokenCost);
-      const outputCost = computeResponseCost(response.usage.output_tokens, this.outputTokenCost);
+    if (
+      response.usage.input_tokens &&
+      response.usage.output_tokens &&
+      this.inputTokenCost &&
+      this.outputTokenCost
+    ) {
+      const inputCost = computeResponseCost(
+        response.usage.input_tokens,
+        this.inputTokenCost
+      );
+      const outputCost = computeResponseCost(
+        response.usage.output_tokens,
+        this.outputTokenCost
+      );
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
         totalCost: inputCost + outputCost,
-      }
+      };
     }
 
     // Convert Anthropic response blocks to our ContentBlock format
@@ -164,9 +175,18 @@ export class AnthropicAdapter implements AIVendorAdapter {
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
+    // Combine history with the current prompt
+    const messagesToSend = [...chat.responseHistory]; // Copy history
+    if (chat.prompt) {
+      messagesToSend.push({
+        role: "user",
+        content: [{ type: "text", text: chat.prompt }], // Add current prompt as user message
+      });
+    }
+
     const response = await this.generateResponse({
       model: chat.model,
-      messages: chat.responseHistory,
+      messages: messagesToSend, // Pass the combined messages
       maxTokens: chat.maxTokens || undefined,
       budgetTokens: chat.budgetTokens || undefined,
       systemPrompt: chat.personaPrompt || undefined,
