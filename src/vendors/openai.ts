@@ -13,7 +13,7 @@ import {
   TextBlock,
   UsageResponse,
   ImageDataBlock, // Correctly import ImageDataBlock
-  ImageBlock,     // Correctly import ImageBlock
+  ImageBlock, // Correctly import ImageBlock
   // Import other ContentBlock types if needed for construction
 } from "../types";
 // Removed duplicate } from "../types";
@@ -23,15 +23,18 @@ import { computeResponseCost } from "../utils";
 
 // Represents the content parts we construct for the API call's message content array
 type OpenAIMessageContentPart =
-  | { type: "input_text"; text: string }
-  | { type: "input_image"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+  | { type: "input_text"; text: string } // For user text input
+  | { type: "output_text"; text: string } // For assistant text output (in history)
+  | {
+      type: "input_image";
+      image_url: { url: string; detail?: "low" | "high" | "auto" };
+    }; // For user image input
 
 // Represents a single message structure we construct for the API call's 'input' array
 type OpenAIMessageInput = {
   role: "user" | "assistant" | "developer"; // Roles for input messages
   content: OpenAIMessageContentPart[]; // Content is always an array of parts for the API
 };
-
 
 export class OpenAIAdapter implements AIVendorAdapter {
   private client: OpenAI;
@@ -66,70 +69,119 @@ export class OpenAIAdapter implements AIVendorAdapter {
       .map((msg): OpenAIMessageInput | null => {
         // Map internal roles to OpenAI's expected input roles
         let role: "user" | "assistant" | "developer"; // Roles for input messages
-   switch (msg.role) {
-     case "user":
-     case "assistant":
-       role = msg.role;
-       break;
-     case "system": // System prompts are handled by 'instructions', skip here
-       console.warn(
-         "System role message found in 'messages' array; use 'systemPrompt'/'instructions' instead. Skipping message."
-       );
-       return null;
-     default:
-       console.warn(`Unsupported role '${msg.role}' mapped to 'user'.`);
-       role = "user"; // Defaulting unrecognized roles
-   }
-   // Removed the extra closing brace here
+        switch (msg.role) {
+          case "user":
+          case "assistant":
+            role = msg.role;
+            break;
+          case "system": // System prompts are handled by 'instructions', skip here
+            console.warn(
+              "System role message found in 'messages' array; use 'systemPrompt'/'instructions' instead. Skipping message."
+            );
+            return null;
+          default:
+            console.warn(`Unsupported role '${msg.role}' mapped to 'user'.`);
+            role = "user"; // Defaulting unrecognized roles
+        }
+        // Removed the extra closing brace here
 
-   // Map internal ContentBlock array to OpenAI's expected input content part array
-   // Ensure msg.content is treated as an array
-   if (!Array.isArray(msg.content)) {
-     console.warn(`Message content is not an array for role '${role}'. Skipping message.`);
-     return null;
-   }
+        // Map internal ContentBlock array to OpenAI's expected input content part array
+        // Ensure msg.content is treated as an array
+        if (!Array.isArray(msg.content)) {
+          console.warn(
+            `Message content is not an array for role '${role}'. Skipping message.`
+          );
+          return null;
+        }
 
-   const apiContentParts = msg.content
-     .map((block): OpenAIMessageInput['content'][number] | null => {
-       if (block.type === "text") {
-         // Map TextBlock to input_text part
-         return { type: "input_text", text: block.text };
-       } else if (block.type === "image" && this.isVisionCapable) {
-         // Map ImageBlock (URL) to input_image part
-         return { type: "input_image", image_url: { url: block.url, detail: "auto" } };
-       } else if (block.type === "image_data" && this.isVisionCapable) {
-         // Map ImageDataBlock (base64) to data URL for input_image part
-         return { type: "input_image", image_url: { url: `data:${block.mimeType};base64,${block.base64Data}`, detail: "auto" } };
-       } else if ((block.type === "image" || block.type === "image_data") && !this.isVisionCapable) {
-         console.warn(`Image block provided for non-vision model '${model}'. Skipping image.`);
-         return null;
-       } else if (block.type === "thinking" || block.type === "redacted_thinking") {
-         return null; // Skip thinking blocks for OpenAI input
-       }
-       console.warn(`Unsupported content block type '${block.type}' for OpenAI input mapping.`);
-       return null;
-       // Use our custom type for the content parts
-     })
-     .filter((part): part is OpenAIMessageContentPart => part !== null); // Filter out nulls
+        const apiContentParts = msg.content
+          .map((block): OpenAIMessageInput["content"][number] | null => {
+            if (block.type === "text") {
+              // Map TextBlock based on role
+              if (role === "assistant") {
+                // Assistant messages in history should use output_text
+                return { type: "output_text", text: block.text };
+              } else {
+                // User messages (and fallbacks) use input_text
+                return { type: "input_text", text: block.text };
+              }
+            } else if (
+              block.type === "image" &&
+              this.isVisionCapable &&
+              role === "user"
+            ) {
+              // Map ImageBlock (URL) to input_image part, only for user role
+              return {
+                type: "input_image",
+                image_url: { url: block.url, detail: "auto" },
+              };
+            } else if (
+              block.type === "image_data" &&
+              this.isVisionCapable &&
+              role === "user"
+            ) {
+              // Map ImageDataBlock (base64) to data URL for input_image part, only for user role
+              return {
+                type: "input_image",
+                image_url: {
+                  url: `data:${block.mimeType};base64,${block.base64Data}`,
+                  detail: "auto",
+                },
+              };
+            } else if (
+              (block.type === "image" || block.type === "image_data") &&
+              role !== "user"
+            ) {
+              // Images are only expected in user messages for this API structure
+              console.warn(
+                `Image block found in non-user message (role: ${role}). Skipping image.`
+              );
+              return null;
+            } else if (
+              (block.type === "image" || block.type === "image_data") &&
+              !this.isVisionCapable
+            ) {
+              // This condition might be redundant now due to the role check above, but kept for clarity
+              console.warn(
+                `Image block provided for non-vision model '${model}'. Skipping image.`
+              );
+              return null;
+            } else if (
+              block.type === "thinking" ||
+              block.type === "redacted_thinking"
+            ) {
+              return null; // Skip thinking blocks for OpenAI input
+            }
+            console.warn(
+              `Unsupported content block type '${block.type}' for OpenAI input mapping.`
+            );
+            return null;
+            // Use our custom type for the content parts
+          })
+          .filter((part): part is OpenAIMessageContentPart => part !== null); // Filter out nulls
 
-   // If no valid content parts were generated for this message, skip the message
-   if (apiContentParts.length === 0) {
-     console.warn(`Skipping message with role '${role}' due to no mappable content.`);
-     return null;
-   }
+        // If no valid content parts were generated for this message, skip the message
+        if (apiContentParts.length === 0) {
+          console.warn(
+            `Skipping message with role '${role}' due to no mappable content.`
+          );
+          return null;
+        }
 
-   // Construct the final message object using our custom type
-   return {
-        role: role,
-        content: apiContentParts,
-   };
- })
- .filter((msg): msg is OpenAIMessageInput => msg !== null); // Filter out any skipped messages
+        // Construct the final message object using our custom type
+        return {
+          role: role,
+          content: apiContentParts,
+        };
+      })
+      .filter((msg): msg is OpenAIMessageInput => msg !== null); // Filter out any skipped messages
 
- // Check if apiInput is empty after filtering
- if (apiInput.length === 0) {
-    throw new Error("No valid messages could be mapped for the OpenAI API request.");
- }
+    // Check if apiInput is empty after filtering
+    if (apiInput.length === 0) {
+      throw new Error(
+        "No valid messages could be mapped for the OpenAI API request."
+      );
+    }
 
     const response = await this.client.responses.create({
       model: model,
@@ -141,13 +193,19 @@ export class OpenAIAdapter implements AIVendorAdapter {
     let usage: UsageResponse | undefined = undefined; // Initialize usage
 
     if (response.usage && this.inputTokenCost && this.outputTokenCost) {
-      const inputCost = computeResponseCost(response.usage.input_tokens, this.inputTokenCost);
-      const outputCost = computeResponseCost(response.usage.output_tokens, this.outputTokenCost);
+      const inputCost = computeResponseCost(
+        response.usage.input_tokens,
+        this.inputTokenCost
+      );
+      const outputCost = computeResponseCost(
+        response.usage.output_tokens,
+        this.outputTokenCost
+      );
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
         totalCost: inputCost + outputCost,
-      }
+      };
     }
 
     // --- Refined Content Extraction ---
@@ -198,7 +256,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return {
       role: "assistant",
       content: responseBlock,
-      usage: usage
+      usage: usage,
     };
   }
 
@@ -263,7 +321,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return {
       role: response.role,
       content: response.content,
-      usage: response.usage
+      usage: response.usage,
     };
   }
 
