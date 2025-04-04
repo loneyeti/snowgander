@@ -67,21 +67,31 @@ if (process.env.OPENROUTER_API_KEY) {
 
 ## Usage
 
+The primary interaction points for a consuming application are:
+
+1.  **`AIVendorFactory`:** Used to configure vendor API keys (`setVendorConfig`) and retrieve adapter instances (`getAdapter`).
+2.  **`ModelConfig`:** An object defining the specific model's capabilities, API name, and costs. This is typically fetched dynamically and passed to the factory.
+3.  **`sendChat`:** The main method on the retrieved adapter for conducting chat conversations.
+
+**Note:** While methods like `generateResponse`, `generateImage`, and `sendMCPChat` exist, the long-term goal is to consolidate most common interactions (including image generation and tool use) into the `sendChat` method for a simpler, unified interface.
+
+Here's a typical workflow:
+
 1.  **Import:** Import the factory and necessary types.
 
     ```typescript
     import {
       AIVendorFactory,
       ModelConfig,
-      Chat,
-      AIRequestOptions,
-      AIResponse,
-      ChatResponse,
+      Chat, // Represents the conversation history
+      ChatResponse, // The result from sendChat
       AIVendorAdapter,
+      // Other types like ContentBlock, TextBlock, ImageDataBlock as needed
     } from "snowgander";
     ```
 
-2.  **Prepare `ModelConfig`:** Create a `ModelConfig` object containing the necessary details about the specific AI model being used (e.g., fetched from a database or configuration file).
+2.  **Prepare `ModelConfig`:** Create a `ModelConfig` object (e.g., fetched from a database).
+
     ```typescript
     // Example: Fetch model details first
     // const modelData = await getModelDetailsFromDB('gpt-4-turbo');
@@ -94,7 +104,9 @@ if (process.env.OPENROUTER_API_KEY) {
       outputTokenCost: modelData.outputTokenCost ?? undefined, // Cost per 1m tokens
     };
     ```
+
 3.  **Get Adapter:** Use the factory to get the appropriate adapter instance.
+
     ```typescript
     // Example: Fetch vendor name first
     // const vendorName = modelData.vendorName; // e.g., "openai"
@@ -103,48 +115,64 @@ if (process.env.OPENROUTER_API_KEY) {
       modelConfig
     );
     ```
-4.  **Use Adapter Methods:** Call methods like `generateResponse` or `generateImage`.
+
+4.  **Use `sendChat`:** Manage conversation history and interact with the model.
 
     ```typescript
-    // Using generateResponse (granular control)
-    const requestOptions: AIRequestOptions = {
-      model: modelConfig.apiName,
+    // Example Chat object (manage this in your application state)
+    let chat: Chat = {
       messages: [
         {
           role: "system",
           content: [{ type: "text", text: "You are a helpful assistant." }],
         },
-        { role: "user", content: [{ type: "text", text: "Hello, world!" }] },
-        // Add image content if model supports vision and adapter handles it:
-        // { role: 'user', content: [{ type: 'imageData', mimeType: 'image/png', data: 'base64encoded...' }] }
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "Hello! What can you do?" },
+            // Add image content if model supports vision and adapter handles it:
+            // { type: 'imageData', mimeType: 'image/png', data: 'base64encoded...' }
+          ],
+        },
       ],
-      // Optional parameters:
+      // Optional parameters can be added here or passed directly to sendChat
       // temperature: 0.7,
-      // maxTokens: 100,
-      // stream: false, // Streaming is not explicitly supported by all adapters yet
+      // maxTokens: 150,
     };
+
     try {
-      const aiResponse: AIResponse = await adapter.generateResponse(
-        requestOptions
+      // Send the entire chat history to the adapter
+      const chatResponse: ChatResponse = await adapter.sendChat(chat, {
+        // Override or add parameters for this specific call if needed
+        // temperature: 0.8,
+      });
+
+      // Update your chat history with the assistant's response
+      chat.messages.push(chatResponse.message);
+
+      console.log(
+        "Assistant Response:",
+        JSON.stringify(chatResponse.message.content, null, 2)
       );
-      console.log("AI Response:", JSON.stringify(aiResponse.content, null, 2));
-      if (aiResponse.usage) {
-        console.log("Estimated Cost:", aiResponse.usage.estimatedCost);
-        console.log("Input Tokens:", aiResponse.usage.inputTokens);
-        console.log("Output Tokens:", aiResponse.usage.outputTokens);
+      if (chatResponse.usage) {
+        console.log("Estimated Cost:", chatResponse.usage.estimatedCost);
+        console.log("Input Tokens:", chatResponse.usage.inputTokens);
+        console.log("Output Tokens:", chatResponse.usage.outputTokens);
       }
     } catch (error) {
-      console.error("Error generating response:", error);
+      console.error("Error sending chat:", error);
     }
 
-    // Using generateImage (check capability first!)
+    // --- Example: Image Generation (Current Method) ---
+    // Note: This functionality is planned to be integrated into sendChat in the future.
     if (adapter.isImageGenerationCapable()) {
-      const imagePrompt = "A futuristic cityscape at sunset";
+      const imagePrompt = "A cute cat wearing sunglasses";
       try {
-        // Note: generateImage API might evolve; current adapters might expect different inputs.
         // The OpenAI adapter currently takes a simple prompt string.
+        // Other adapters might require different parameters or not support it.
         const imageUrl: string = await adapter.generateImage(imagePrompt); // Returns data URI or URL
         console.log("Generated Image URL/Data:", imageUrl);
+        // You might add this image URL/data as a message in your chat history
       } catch (error) {
         console.error("Error generating image:", error);
       }
