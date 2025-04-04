@@ -86,6 +86,7 @@ export interface Chat {
   maxTokens: number | null; // Max tokens for the response
   budgetTokens: number | null; // Token budget for thinking mode
   systemPrompt?: string; // The actual system prompt text from the persona
+  mcpAvailableTools?: MCPAvailableTool[];
 }
 
 // Represents an MCP Tool configuration
@@ -131,7 +132,7 @@ export interface AIRequestOptions {
   budgetTokens?: number; // Token budget for thinking mode
   prompt?: string; // The primary user prompt (often redundant if included in messages)
   // Add other vendor-specific options if necessary (e.g., tools for Anthropic/Google)
-  // tools?: any[];
+  tools?: any[]; // Formatted tools for API call (e.g., Anthropic)
 }
 
 // Interface defining the contract for all AI vendor adapters
@@ -143,8 +144,6 @@ export interface AIVendorAdapter {
   generateImage(chat: Chat): Promise<string>;
   // Simplified method to send a full chat context (history, prompt, config)
   sendChat(chat: Chat): Promise<ChatResponse>;
-  // Method specifically for handling interactions involving MCP tools
-  sendMCPChat(chat: Chat, mcpToolData: MCPTool): Promise<ChatResponse>;
 
   // Capability flags
   isVisionCapable?: boolean;

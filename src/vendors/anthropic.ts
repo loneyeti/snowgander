@@ -4,14 +4,16 @@ import {
   AIRequestOptions,
   AIResponse,
   VendorConfig,
-  ModelConfig, // Import ModelConfig
-  Chat, // Import from ../types now
-  ChatResponse, // Import from ../types now
-  ContentBlock, // Import from ../types now
+  ModelConfig,
+  Chat,
+  ChatResponse,
+  ContentBlock,
+  ToolUseBlock, // Import ToolUseBlock
   MCPTool,
-  UsageResponse, // Import from ../types now
+  UsageResponse,
 } from "../types";
 import { computeResponseCost } from "../utils";
+import { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages"; // Corrected Import Anthropic Tool type
 // Removed Prisma Model import
 // Removed incorrect Chat, ChatResponse, ContentBlock import path
 // Removed application-specific imports (updateUserUsage, getCurrentAPIUser)
@@ -51,6 +53,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       budgetTokens,
       systemPrompt,
       thinkingMode,
+      tools, // Destructure tools from options
     } = options;
 
     // Convert messages to Anthropic format
@@ -114,6 +117,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
             budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2), // Use provided budget or half of max tokens
           },
         }),
+      ...(tools && { tools }), // Pass tools if provided
     });
 
     let usage: UsageResponse | undefined = undefined;
@@ -154,9 +158,15 @@ export class AnthropicAdapter implements AIVendorAdapter {
           type: "text",
           text: block.text,
         });
+      } else if (block.type === "tool_use") {
+        // Map Anthropic tool_use to our ToolUseBlock
+        contentBlocks.push({
+          type: "tool_use",
+          name: block.name,
+          input: JSON.stringify(block.input), // Stringify the input object
+        });
       }
-      // Skip tool_use and any unknown block types for now
-      // A more complete implementation might map tool_use blocks if needed by the caller
+      // Skip any other unknown block types
     }
 
     // Removed usage calculation and user update logic
@@ -184,6 +194,31 @@ export class AnthropicAdapter implements AIVendorAdapter {
       });
     }
 
+    // Format MCP tools for Anthropic API if available
+    let formattedTools: AnthropicTool[] | undefined = undefined;
+    if (chat.mcpAvailableTools && chat.mcpAvailableTools.length > 0) {
+      formattedTools = chat.mcpAvailableTools.map((tool) => {
+        try {
+          return {
+            name: tool.name,
+            description: tool.description,
+            input_schema: JSON.parse(tool.input_schema), // Parse the schema string
+          };
+        } catch (error) {
+          console.error(
+            `Error parsing input_schema for tool ${tool.name}:`,
+            error
+          );
+          // Return a minimal valid schema or handle error appropriately
+          return {
+            name: tool.name,
+            description: tool.description,
+            input_schema: { type: "object", properties: {} }, // Fallback schema
+          };
+        }
+      });
+    }
+
     const response = await this.generateResponse({
       model: chat.model,
       messages: messagesToSend, // Pass the combined messages
@@ -191,6 +226,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       budgetTokens: chat.budgetTokens || undefined,
       systemPrompt: chat.systemPrompt || undefined,
       thinkingMode: (chat.budgetTokens ?? 0) > 0,
+      tools: formattedTools, // Pass formatted tools
     });
 
     return {
@@ -200,40 +236,5 @@ export class AnthropicAdapter implements AIVendorAdapter {
     };
   }
 
-  // Removed application-specific MCP logic. Tool handling should be done by the caller.
-  async sendMCPChat(chat: Chat, mcpToolData: MCPTool): Promise<ChatResponse> {
-    // This adapter focuses on API interaction.
-    // The calling application (Snowgoose) should:
-    // 1. Prepare tool definitions based on mcpToolData.
-    // 2. Call generateResponse (or a dedicated method if added) with tool definitions.
-    // 3. Receive the API response, potentially containing a 'tool_use' block.
-    // 4. If 'tool_use' is present, execute the tool using its own MCP logic (mcpManager).
-    // 5. Send the tool execution result back to the API via another generateResponse call.
-    console.warn(
-      "AnthropicAdapter.sendMCPChat called, but MCP logic belongs in the calling application. Returning error."
-    );
-    throw new Error(
-      "Direct MCP tool execution is not handled within the AIVendorAdapter. The calling application must manage tool definition, execution, and result submission."
-    );
-
-    // Example of how the *caller* might structure the flow:
-    //
-    // // --- In Snowgoose Server Action ---
-    // const adapter = await AIVendorFactory.getAdapter(...)
-    // const tools = await mcpManager.getAvailableTools(mcpToolData);
-    // const formattedTools = tools.map(...) // Format for Anthropic
-    //
-    // let response = await adapter.generateResponse({ ..., tools: formattedTools });
-    //
-    // while (response.content.some(block => block.type === 'tool_use')) { // Pseudo-code check
-    //    const toolUseBlock = response.content.find(block => block.type === 'tool_use');
-    //    // Extract tool name, input from toolUseBlock
-    //    const toolResult = await mcpManager.callTool(...);
-    //    // Format toolResult for Anthropic API
-    //    // Add tool result message to history
-    //    response = await adapter.generateResponse({ ..., messages: updatedHistory });
-    // }
-    // return response;
-    // // --- End Example ---
-  }
+  // sendMCPChat method is removed as tool handling is now integrated into sendChat/generateResponse
 }

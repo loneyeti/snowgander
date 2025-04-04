@@ -509,21 +509,5 @@ describe("AnthropicAdapter", () => {
     });
   });
 
-  // --- sendMCPChat Tests ---
-  describe("sendMCPChat", () => {
-    it("should throw NotImplementedError", async () => {
-      const dummyChat: Partial<Chat> = { prompt: "test" };
-      const dummyTool: any = { id: 1, name: "dummy", path: "" };
-      try {
-        await adapter.sendMCPChat(dummyChat as Chat, dummyTool);
-        // If it doesn't throw, fail the test
-        throw new Error("sendMCPChat did not throw the expected error.");
-      } catch (error: any) {
-        // Assert on the error message directly
-        expect(error.message).toBe(
-          "Direct MCP tool execution is not handled within the AIVendorAdapter. The calling application must manage tool definition, execution, and result submission."
-        );
-      }
-    });
-  });
+  // --- sendMCPChat Tests Removed ---
 });

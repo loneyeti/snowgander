@@ -15,11 +15,16 @@ This TypeScript library provides a robust, maintainable, and extensible abstract
 - **Cost Calculation:** Provides utilities and standardized response fields (`UsageResponse`) for estimating interaction costs based on token usage.
 - **Type Safety:** Written in TypeScript with shared type definitions.
 
-## Current Limitations
+## Current Limitations & Design Notes
 
-- **No MCP Tool Handling:** The `sendMCPChat` method is **not implemented** in any adapter. Responsibility for defining tools for vendor APIs, handling tool use requests, executing tools, and sending results back currently lies entirely with the consuming application.
+- **MCP Tool Handling:** Tool usage is now integrated into the `sendChat` method for supported vendors (e.g., Anthropic).
+  - The consuming application provides available tools via the `mcpAvailableTools` field in the `Chat` object (using the `MCPAvailableTool` type from `src/types.ts`).
+  - The adapter formats these tools for the vendor's API.
+  - The vendor API may respond with `ToolUseBlock` content, indicating a tool call request.
+  - **Crucially, the responsibility for _executing_ the requested tool and sending back a `ToolResultBlock` in a subsequent message still lies with the consuming application.** The adapters facilitate the communication but do not execute external tools.
+  - Support varies by vendor (Anthropic supports it; check other adapters). The legacy `sendMCPChat` method is deprecated/removed.
 - **Inconsistent Multimodal Support:** Handling of image inputs varies between adapters. URL-based images (`ImageBlock`) are generally not automatically processed by adapters; base64-encoded images (`ImageDataBlock`) have better support but may require pre-processing by the consuming application for some vendors (e.g., Google). Check specific adapter capabilities.
-- **Limited Image Generation:** Currently, only the OpenAI adapter supports image generation (`generateImage`).
+- **Limited Image Generation:** Currently, only the OpenAI adapter supports image generation (`generateImage`). This is planned to be integrated into `sendChat` in the future.
 
 ## Installation
 
@@ -140,7 +145,24 @@ Here's a typical workflow:
       imageURL: null, // Set to image URL (potentially for display?)
       maxTokens: 150, // Optional: Max tokens for this specific turn
       budgetTokens: null, // Optional: Token budget for thinking mode
+      mcpAvailableTools: [], // Optional: Tools available for the model to use
     };
+
+    // --- Example: Providing Available Tools (for vendors like Anthropic) ---
+    // if (adapterSupportsTools) { // Check if the adapter/model supports tools
+    //   chat.mcpAvailableTools = [
+    //     {
+    //       name: "get_weather",
+    //       description: "Get the current weather for a location",
+    //       input_schema: JSON.stringify({ // Schema must be a JSON string
+    //         type: "object",
+    //         properties: { location: { type: "string" } },
+    //         required: ["location"],
+    //       }),
+    //     },
+    //     // ... other tools
+    //   ];
+    // }
 
     // Add image data if needed (using visionUrl or potentially modifying prompt/history)
     // if (modelConfig.isVisionCapable && imageBase64Data) {
@@ -167,6 +189,35 @@ Here's a typical workflow:
         "Assistant Response:",
         JSON.stringify(chatResponse.content, null, 2) // Note: chatResponse itself is the message
       );
+
+      // --- Example: Handling Tool Use Requests ---
+      // Check if the response contains a tool use request
+      const toolUseBlock = chatResponse.content.find(
+        (block): block is ToolUseBlock => block.type === "tool_use"
+      );
+
+      if (toolUseBlock) {
+        console.log(`Tool Use Requested: ${toolUseBlock.name}`);
+        console.log(`Input: ${toolUseBlock.input}`); // Input is a stringified JSON
+
+        // --- !!! APPLICATION LOGIC REQUIRED HERE !!! ---
+        // 1. Parse toolUseBlock.input
+        // 2. Execute the corresponding tool (e.g., call your get_weather function)
+        // 3. Construct a ToolResultBlock with the output
+        // 4. Add a new message to chat.responseHistory containing the ToolResultBlock
+        // 5. Call adapter.sendChat() again with the updated history to get the final response
+        // Example (Conceptual):
+        // const toolResult = await executeMyTool(toolUseBlock.name, JSON.parse(toolUseBlock.input));
+        // const resultBlock: ToolResultBlock = {
+        //   type: 'tool_result',
+        //   toolUseId: ???, // Anthropic doesn't seem to use ID here, map based on request
+        //   content: [{ type: 'text', text: JSON.stringify(toolResult) }]
+        // };
+        // chat.responseHistory.push({ role: 'user', content: [resultBlock] }); // Role might depend on API spec
+        // const finalResponse = await adapter.sendChat(chat);
+        // console.log("Final Assistant Response after Tool Use:", finalResponse.content);
+        // --- !!! END APPLICATION LOGIC !!! ---
+      }
       if (chatResponse.usage) {
         console.log("Total Cost:", chatResponse.usage.totalCost);
         console.log("Input Cost:", chatResponse.usage.inputCost);
@@ -204,4 +255,7 @@ Here's a typical workflow:
 ## Exports
 
 - `AIVendorFactory`: Class for creating adapter instances.
-- Types: `AIVendorAdapter`, `AIRequestOptions`, `AIResponse`, `VendorConfig`, `ModelConfig`, `ContentBlock`, `ThinkingBlock`, `RedactedThinkingBlock`, `TextBlock`, `ImageBlock`, `ImageDataBlock`, `MCPTool`, `Message`.
+- Types:
+  - Core: `AIVendorAdapter`, `AIRequestOptions`, `AIResponse`, `VendorConfig`, `ModelConfig`, `Chat`, `ChatResponse`, `Message`, `UsageResponse`
+  - Content Blocks: `ContentBlock`, `ThinkingBlock`, `RedactedThinkingBlock`, `TextBlock`, `ImageBlock`, `ImageDataBlock`, `ToolUseBlock`, `ToolResultBlock`
+  - Tools: `MCPAvailableTool` (Note: `MCPTool` might be deprecated or internal)
