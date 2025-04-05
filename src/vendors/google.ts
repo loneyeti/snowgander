@@ -20,6 +20,9 @@ import {
   UsageResponse, // Ensure Message is imported
 } from "../types";
 import { computeResponseCost } from "../utils";
+import axios from "axios"; // Import axios
+// Removed static import for file-type
+
 // Application-specific imports removed
 
 export class GoogleAIAdapter implements AIVendorAdapter {
@@ -92,6 +95,38 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       });
   }
 
+  // Helper function to fetch image data and determine MIME type
+  private async getImageDataFromUrl(
+    url: string
+  ): Promise<{ mimeType: string; base64Data: string } | null> {
+    try {
+      const response = await axios.get(url, {
+        responseType: "arraybuffer", // Fetch as ArrayBuffer
+      });
+
+      const buffer = Buffer.from(response.data, "binary"); // Convert to Buffer
+      // Dynamically import file-type
+      const { fileTypeFromBuffer } = await import("file-type");
+      const type = await fileTypeFromBuffer(buffer); // Detect MIME type
+
+      if (!type || !type.mime.startsWith("image/")) {
+        console.error(`Invalid or non-image MIME type detected: ${type?.mime}`);
+        return null; // Or throw an error
+      }
+
+      const base64Data = buffer.toString("base64"); // Convert buffer to base64
+
+      return { mimeType: type.mime, base64Data };
+    } catch (error) {
+      console.error(
+        `Error fetching or processing image from URL ${url}:`,
+        error
+      );
+      // Optionally re-throw or handle differently
+      return null;
+    }
+  }
+
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
     const { model, messages, maxTokens, systemPrompt, visionUrl } = options;
 
@@ -120,23 +155,45 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       ];
     }
 
+    // --- Vision Handling ---
+    let visionPart: Part | null = null;
     if (visionUrl && this.isVisionCapable) {
-      const lastMessage = formattedMessages[formattedMessages.length - 1];
-      if (lastMessage && lastMessage.role === "user") {
-        const mimeType = "image/png"; // Example
-        lastMessage.parts.push({
-          inlineData: { mimeType: mimeType, data: visionUrl },
-        });
+      const imageData = await this.getImageDataFromUrl(visionUrl);
+      if (imageData) {
+        visionPart = {
+          inlineData: {
+            mimeType: imageData.mimeType,
+            data: imageData.base64Data,
+          },
+        };
       } else {
+        console.warn(`Could not process image from visionUrl: ${visionUrl}`);
+        // Decide how to handle failure: skip image, throw error, etc.
+        // For now, we'll just skip adding the image part.
+      }
+    }
+
+    // Add vision part to the last user message or create a new one
+    if (visionPart) {
+      const lastMessageIndex = formattedMessages.length - 1;
+      if (
+        lastMessageIndex >= 0 &&
+        formattedMessages[lastMessageIndex].role === "user"
+      ) {
+        // Append to the last user message's parts
+        formattedMessages[lastMessageIndex].parts.push(visionPart);
+      } else {
+        // If no messages or last message isn't 'user', create a new user message
         formattedMessages.push({
           role: "user",
-          parts: [{ inlineData: { mimeType: "image/png", data: visionUrl } }],
+          parts: [visionPart], // Start with the image part
         });
         console.warn(
-          "Image data provided but no suitable user message found to append to. Created new message."
+          "Image data provided but no suitable user message found to append to, or message history was empty. Created new user message solely for the image."
         );
       }
     }
+    // --- End Vision Handling ---
 
     const contentsRequest: GenerateContentRequest = {
       contents: formattedMessages,
