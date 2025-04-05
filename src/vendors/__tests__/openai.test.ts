@@ -292,10 +292,7 @@ describe("OpenAIAdapter", () => {
                 // Expect mapped content array
                 {
                   type: "input_image",
-                  image_url: {
-                    url: "data:image/png;base64,base64encodedstring",
-                    detail: "auto",
-                  },
+                  image_url: "data:image/png;base64,base64encodedstring",
                 },
                 { type: "input_text", text: "What is this?" },
               ],
@@ -346,7 +343,7 @@ describe("OpenAIAdapter", () => {
                 // Expect mapped content array
                 {
                   type: "input_image",
-                  image_url: { url: imageUrl, detail: "auto" },
+                  image_url: imageUrl,
                 },
                 { type: "input_text", text: "Describe this image." },
               ],

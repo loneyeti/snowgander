@@ -1,41 +1,48 @@
-# Progress: AI Vendor Abstraction Layer (2025-04-03)
+# Progress: AI Vendor Abstraction Layer (2025-04-05)
 
 ## What Works
 
-*   **Core Abstraction:** Factory (`AIVendorFactory`) and Adapter (`AIVendorAdapter`) patterns are implemented.
-*   **Basic Chat:** Standard chat completion (`generateResponse`, `sendChat`) is functional for all implemented vendors (OpenAI, Anthropic, Google, OpenRouter), primarily handling text-based interactions.
-*   **Configuration:** Adapters are instantiated with `VendorConfig` (API keys, etc.) and `ModelConfig` (capabilities, costs, API name).
-*   **Content Blocks (Basic):** The `ContentBlock[]` system is defined in `types.ts` and used for structuring messages and responses. Adapters perform basic mapping for `TextBlock`.
-*   **Capability Flags:** Adapters correctly report `isVisionCapable`, `isImageGenerationCapable`, `isThinkingCapable` based on `ModelConfig`.
-*   **Cost Calculation:** Basic cost estimation based on reported token counts and configured costs is implemented using `computeResponseCost` and returned in `UsageResponse`.
-*   **Vendor Support:** Adapters exist for OpenAI, Anthropic, Google AI, and OpenRouter.
-*   **Image Generation (OpenAI):** `generateImage` is implemented for the OpenAI adapter (DALL-E 3).
-*   **Vision Input (Basic):**
-    *   Google adapter handles `ImageDataBlock` (base64).
-    *   OpenAI adapter handles `imageData` (base64) by converting it to `image_url` format.
-*   **Thinking Blocks (Anthropic):** Anthropic adapter handles sending and receiving `ThinkingBlock` content.
+- **Core Abstraction:** Factory (`AIVendorFactory`) and Adapter (`AIVendorAdapter`) patterns are fully implemented.
+- **Comprehensive Type System:** The `types.ts` file provides a complete set of TypeScript interfaces and types for all aspects of the library:
+  - `ContentBlock` union type with multiple specialized block types
+  - `AIVendorAdapter` interface definition
+  - Configuration types (`VendorConfig`, `ModelConfig`)
+  - Message and response formats
+  - Tool-related types
+- **Factory Pattern:** The `factory.ts` implementation uses a static configuration map and provides a clean interface for adapter instantiation.
+- **Content Blocks (Enhanced):** The `ContentBlock[]` system supports not only text but also images (both URL and base64), thinking blocks, tool use, and tool results.
+- **Tool Support:** The Anthropic adapter now integrates tool handling directly into its `sendChat` and `generateResponse` methods, formatting MCP tools for the Anthropic API.
+- **Capability Flags:** Adapters report their capabilities (`isVisionCapable`, `isImageGenerationCapable`, `isThinkingCapable`) based on the injected `ModelConfig`.
+- **Cost Calculation:** Token usage tracking and cost calculation is implemented using `computeResponseCost` utility and returned in `UsageResponse` objects.
+- **Vendor Support:** Adapters exist for OpenAI, Anthropic, Google AI, and OpenRouter with consistent factory instantiation.
+- **Thinking Blocks:** Anthropic adapter fully supports thinking mode through the `thinkingMode` option.
 
 ## What's Left to Build / TODOs
 
-*   **MCP Tool Support:**
-    *   **Major Gap:** `sendMCPChat` is **not implemented** in any adapter. All adapters currently throw errors. The design delegates full MCP lifecycle management (tool definition, execution, result handling) to the consuming application. This needs to be addressed either by implementing it in the adapters or confirming the delegation strategy is acceptable.
-    *   OpenAI adapter needs mapping for tool call outputs (`TODO` comment).
-    *   OpenRouter adapter requires investigation into whether tool/function calling parameters are passed through (`TODO` comment).
-*   **Enhanced Content Block Mapping:**
-    *   OpenRouter adapter needs proper mapping for complex content blocks (vision, etc.) beyond simple text extraction (`TODO` comment).
-    *   Google adapter requires the *calling application* to pre-process URL-based images (`ImageBlock`) into base64 (`ImageDataBlock`) before sending them to the adapter (logged warning). The adapter itself doesn't fetch URLs.
-*   **Refinement & Testing:**
-    *   Add comprehensive unit and integration tests for all adapters and functionalities.
+- **Tool Implementation Consistency:**
+  - The Anthropic adapter has integrated tool handling, but we need to verify consistent implementation across OpenAI, Google, and OpenRouter adapters.
+  - OpenAI adapter may still need mapping for tool call outputs (need to verify current state).
+  - OpenRouter adapter may need additional work for tool/function calling parameter handling.
+- **Enhanced Content Block Mapping:**
+  - OpenRouter adapter likely needs improved mapping for complex content blocks (vision, etc.) beyond simple text extraction.
+  - Google adapter may still require the _calling application_ to pre-process URL-based images (`ImageBlock`) into base64 (`ImageDataBlock`) before sending them to the adapter.
+  - Complete review of all adapters for consistent content block handling is needed.
+- **Image Generation Support:**
+  - Verify and potentially expand image generation support beyond the OpenAI adapter.
+- **Refinement & Testing:**
+  - Ensure comprehensive test coverage for all adapters and their interactions with the factory pattern.
+  - Add integration tests that verify correct handling of complex content types (images, tools, thinking blocks).
 
 ## Current Status
 
-*   **Foundation Built:** The core abstraction layer, type definitions, factory, and basic adapter implementations are in place.
-*   **Memory Bank Initialized:** Core documentation files have been created based on the current codebase (as of 2025-04-03).
-*   **Ready for Feature Enhancement:** The library provides basic chat and some modality support, but requires significant work to fully support advanced features like MCP tools and robust multimodal handling across all vendors.
+- **Solid Foundation:** The core abstraction layer, comprehensive type system, factory pattern, and adapter implementations are fully in place.
+- **Memory Bank Updated:** Documentation has been updated to reflect the current project state (as of 2025-04-05).
+- **Tool Handling Evolution:** The approach to tool handling appears to have evolved, with at least the Anthropic adapter integrating MCP tool support directly rather than using a separate `sendMCPChat` method.
+- **Ready for Consistency Verification:** The next step is to verify that all adapters handle tools, content blocks, and capabilities with a consistent approach.
 
 ## Known Issues / Limitations
 
-*   **No MCP Tool Handling:** As mentioned, this is the most significant functional gap. The library currently cannot manage tool interactions with vendor APIs.
-*   **Inconsistent Multimodal Support:** Handling of image inputs varies: Google requires pre-processed base64, OpenAI handles base64, Anthropic doesn't support vision, OpenRouter's support is basic/untested. URL-based images (`ImageBlock`) are not automatically handled by adapters.
-*   **Limited Image Generation:** Only OpenAI adapter supports image generation.
-*   **Potential OpenAI Endpoint Issue:** Use of `client.responses.create` in `OpenAIAdapter` might be suboptimal.
+- **Tool Handling Consistency:** While the Anthropic adapter now integrates tool handling, we need to verify consistent implementation across all adapters.
+- **Inconsistent Multimodal Support:** Handling of image inputs likely still varies across adapters: Google may require pre-processed base64, OpenAI handles base64, Anthropic may have limited or no vision support depending on model, and OpenRouter's support may be basic/untested.
+- **Limited Image Generation:** Image generation support may still be limited to the OpenAI adapter.
+- **Potential OpenAI Endpoint Divergence:** Use of `client.responses.create` in `OpenAIAdapter` versus `client.chat.completions.create` in `OpenRouterAdapter` may still be a point of divergence worth examining.

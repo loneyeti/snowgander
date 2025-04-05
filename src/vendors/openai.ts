@@ -27,7 +27,7 @@ type OpenAIMessageContentPart =
   | { type: "output_text"; text: string } // For assistant text output (in history)
   | {
       type: "input_image";
-      image_url: { url: string; detail?: "low" | "high" | "auto" };
+      image_url: string;
     }; // For user image input
 
 // Represents a single message structure we construct for the API call's 'input' array
@@ -113,7 +113,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
               // Map ImageBlock (URL) to input_image part, only for user role
               return {
                 type: "input_image",
-                image_url: { url: block.url, detail: "auto" },
+                image_url: block.url,
               };
             } else if (
               block.type === "image_data" &&
@@ -123,10 +123,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
               // Map ImageDataBlock (base64) to data URL for input_image part, only for user role
               return {
                 type: "input_image",
-                image_url: {
-                  url: `data:${block.mimeType};base64,${block.base64Data}`,
-                  detail: "auto",
-                },
+                image_url: `data:${block.mimeType};base64,${block.base64Data}`,
               };
             } else if (
               (block.type === "image" || block.type === "image_data") &&

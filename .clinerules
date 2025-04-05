@@ -12,9 +12,9 @@ This file captures key learnings, patterns, and preferences for the AI Vendor Ab
 
 ## Current Limitations / Areas for Attention
 
-- **MCP Tool Handling:** Currently delegated entirely to the consuming application. Adapters throw errors for `sendMCPChat`. This is a major design point to be aware of.
+- **MCP Tool Handling:** The approach appears to be evolving. Initially tools were delegated entirely to the consuming application with adapters throwing errors for `sendMCPChat`. Now at least the Anthropic adapter integrates tool handling directly in `sendChat` and `generateResponse` methods, formatting MCP tools for the API. Need to verify consistency across all adapters.
 - **Multimodal Input:** Handling of image inputs (`ImageDataBlock`, `ImageBlock`) varies significantly between adapters and requires careful attention.
-- **OpenAI Endpoint:** The `OpenAIAdapter` uses `client.responses.create`, which might differ from the more common `client.chat.completions.create`.
+- **OpenAI Endpoint:** The `OpenAIAdapter` uses `client.responses.create`, which is the new way to interact with OpenAI's API
 
 ## User Preferences & Workflow
 
@@ -27,3 +27,4 @@ This file captures key learnings, patterns, and preferences for the AI Vendor Ab
 ## Project Evolution Notes
 
 - **2025-04-03:** Initial Memory Bank and `.clinerules` created based on code review. Focus is on establishing baseline documentation.
+- **2025-04-05:** Updated Memory Bank based on detailed review of `types.ts`, `factory.ts`, and examination of adapters. Discovered evolution in tool handling approach with the Anthropic adapter now directly supporting MCP tools in its standard methods.

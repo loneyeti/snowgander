@@ -1,24 +1,40 @@
-# Active Context: Memory Bank Initialization (2025-04-03)
+# Active Context: Memory Bank Update (2025-04-05)
 
 ## Current Focus
 
-- **Task:** Initialize and populate the Memory Bank for the AI Vendor Abstraction Layer project (`snowgander`).
-- **Action:** Reviewing all files in the `src/` directory (`factory.ts`, `index.ts`, `types.ts`, `utils.ts`, and all vendor adapters in `src/vendors/`) to understand the current state, architecture, patterns, and technical details.
-- **Goal:** Create the core Memory Bank documents (`projectbrief.md`, `productContext.md`, `systemPatterns.md`, `techContext.md`, `activeContext.md`, `progress.md`) to establish a baseline understanding for future work.
+- **Task:** Update the Memory Bank for the AI Vendor Abstraction Layer project (`snowgander`) based on review of `src/types.ts` and `src/factory.ts`.
+- **Action:** Reviewing key files in the `src/` directory with particular attention to `types.ts` (defining the core interfaces and data structures) and `factory.ts` (implementing the adapter factory pattern).
+- **Goal:** Ensure Memory Bank accurately reflects the current implementation, with special focus on the type system and factory pattern implementation.
 
 ## Key Observations During Review
 
-- **Content Blocks:** The system heavily relies on the `ContentBlock[]` structure defined in `types.ts` for representing message content consistently across different vendors. This includes text, images (URL and base64 data), and thinking steps. Adapters are responsible for mapping to/from this structure.
-- **Cost Calculation:** A utility `computeResponseCost` exists and is used by adapters to calculate costs based on token usage reported by vendor APIs and configured per-token costs (`inputTokenCost`, `outputTokenCost` in `ModelConfig`). Results are returned in the `UsageResponse` object.
-- **MCP Tool Handling:** A recurring pattern is that the `sendMCPChat` method in _all_ adapters currently throws an error. The comments explicitly state that the responsibility for managing the MCP tool lifecycle (defining tools for the API, handling tool use requests, executing tools, sending back results) lies with the _consuming application_, not the adapters themselves. This is a significant design decision and limitation of the current adapters.
-- **Unimplemented/TODOs:**
-  - OpenAI adapter needs mapping for non-text output types (like tool calls) (`TODO` comment).
-  - OpenRouter adapter needs proper mapping for complex content blocks (vision/other types) (`TODO` comment).
-  - OpenRouter adapter needs investigation regarding tool/function calling pass-through (`TODO` comment).
-  - Google adapter needs pre-processing for URL-based images (`image` block type) into base64 `inlineData` before passing to the adapter (logged warning).
-- **Strict ContentBlocks:** The user emphasized the strict use of `ContentBlocks` for all responses, which seems aligned with the current implementation in `types.ts` and the adapters' attempts to map to/from this structure.
+- **Type System:** The `types.ts` file defines a comprehensive type system with:
+
+  - `ContentBlock` union type (including `TextBlock`, `ImageBlock`, `ImageDataBlock`, `ThinkingBlock`, etc.) for standardized message content representation
+  - Clear interfaces for adapters (`AIVendorAdapter`), configurations (`VendorConfig`, `ModelConfig`), and messaging (`Message`, `Chat`, `ChatResponse`)
+  - Robust definition of tool-related types (`ToolUseBlock`, `ToolResultBlock`, `MCPAvailableTool`)
+  - Explicit capability flags in the `AIVendorAdapter` interface
+
+- **Factory Implementation:** The `factory.ts` file implements a clean factory pattern:
+
+  - Maintains a static `vendorConfigs` Map to store configurations
+  - Uses the `getAdapter(vendorName, modelConfig)` method to instantiate vendor-specific adapters
+  - Ensures proper configuration injection into adapters via constructor parameters
+  - Supports multiple vendors (OpenAI, Anthropic, Google, OpenRouter)
+
+- **Adapter Evolution:** Examining the Anthropic adapter shows:
+
+  - Tools are handled directly in `sendChat` and `generateResponse` methods
+  - The `sendMCPChat` method no longer exists in the Anthropic adapter, suggesting these functions are now integrated
+  - Detailed mapping of content blocks between our system format and Anthropic's API format
+
+- **Index Exports:** The `index.ts` file cleanly exports:
+  - The factory as the primary interface for consuming applications
+  - All necessary types consumers might need
+  - An option (commented out) to export individual adapters if needed
 
 ## Next Steps
 
-1.  Complete the creation of the `progress.md` file, summarizing the implemented features and known limitations/TODOs.
-2.  Signal completion of the Memory Bank update task.
+1.  Update `progress.md` to reflect the current state of implementation, noting any changes to tool handling and content block processing.
+2.  Consider reviewing the implementation of other adapters (OpenAI, Google, OpenRouter) to verify consistent patterns.
+3.  Document any evolving patterns in how the library handles MCP tools, especially since the direct `sendMCPChat` method approach appears to have been replaced.
