@@ -13,9 +13,12 @@ import {
   UsageResponse,
 } from "../types";
 import { computeResponseCost } from "../utils";
-import { Tool as AnthropicTool } from "@anthropic-ai/sdk/resources/messages"; // Corrected Import Anthropic Tool type
+// Import necessary types from Anthropic SDK
+import {
+  Tool as AnthropicTool,
+  ToolUseBlockParam,
+} from "@anthropic-ai/sdk/resources/messages";
 // Removed Prisma Model import
-// Removed incorrect Chat, ChatResponse, ContentBlock import path
 // Removed application-specific imports (updateUserUsage, getCurrentAPIUser)
 
 export class AnthropicAdapter implements AIVendorAdapter {
@@ -79,10 +82,11 @@ export class AnthropicAdapter implements AIVendorAdapter {
               signature: string;
             }
           | {
-              type: "tool_result"; // Add Anthropic's tool_result type
-              tool_use_id: string; // <<< Corrected type to string
-              content: string | Array<{ type: "text"; text: string }>; // Anthropic expects string or text block array
+              type: "tool_result";
+              tool_use_id: string;
+              content: string | Array<{ type: "text"; text: string }>;
             }
+          | ToolUseBlockParam // Add Anthropic's ToolUseBlockParam type
         >
       >((acc, block) => {
         if (block.type === "text") {
@@ -91,10 +95,12 @@ export class AnthropicAdapter implements AIVendorAdapter {
             text: block.text,
           });
         } else if (block.type === "thinking") {
+          // Map thinking block - Although Anthropic doesn't accept these in requests,
+          // the test expects the formatting logic to handle them.
           acc.push({
             type: "thinking",
             thinking: block.thinking,
-            signature: block.signature,
+            signature: block.signature, // Assuming signature maps directly, adjust if needed
           });
         } else if (block.type === "tool_result" && msg.role === "user") {
           // Handle tool_result specifically for user messages
@@ -111,10 +117,31 @@ export class AnthropicAdapter implements AIVendorAdapter {
             content: toolResultContent, // Send as string for simplicity
             // Alternatively, format as [{ type: 'text', text: toolResultContent }] if preferred
           });
+        } else if (block.type === "tool_use" && msg.role === "assistant") {
+          // Map tool_use blocks from assistant history correctly for the API request
+          // Ensure the ID exists and input is valid JSON
+          if (block.id && typeof block.input === "string") {
+            try {
+              const parsedInput = JSON.parse(block.input);
+              acc.push({
+                type: "tool_use",
+                id: block.id,
+                name: block.name,
+                input: parsedInput, // Anthropic expects the parsed object here
+              });
+            } catch (e) {
+              console.error(
+                `Skipping tool_use block due to invalid JSON input: ${block.input}`,
+                e
+              );
+            }
+          } else {
+            console.warn(
+              "Skipping tool_use block due to missing ID or invalid input type."
+            );
+          }
         }
-        // Note: We are intentionally skipping 'tool_use' blocks when sending *to* Anthropic,
-        // as those are generated *by* the assistant, not sent *by* the user.
-        // We also skip image blocks as Anthropic vision handling is different.
+        // Note: We intentionally skip image blocks as Anthropic vision handling is different.
         return acc;
       }, []);
 
