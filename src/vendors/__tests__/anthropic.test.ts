@@ -197,7 +197,9 @@ describe("AnthropicAdapter", () => {
       );
     });
 
-    it("should IGNORE ImageDataBlock (as mapping is not implemented)", async () => {
+    it("should warn and IGNORE ImageDataBlock (as mapping is not implemented/verified)", async () => {
+      // Spy on console.warn
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
       const { mockMessagesCreate } = getMockAnthropicClient();
       const imageData: ImageDataBlock = {
         type: "image_data",
@@ -241,13 +243,21 @@ describe("AnthropicAdapter", () => {
           ],
         })
       );
+      // Check if console.warn was called (optional but good)
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Anthropic adapter received ImageDataBlock (base64)"
+        )
+      );
+      consoleWarnSpy.mockRestore(); // Clean up spy
     });
 
-    it("should IGNORE ImageBlock (URL) (as mapping is not implemented)", async () => {
+    it("should map ImageBlock (URL) correctly for vision models", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
+      const imageUrl = "http://example.com/image.png";
       const imageBlock: ImageBlock = {
         type: "image",
-        url: "http://example.com/image.png",
+        url: imageUrl, // Keep only one url property
       };
       const messagesWithImage: Message[] = [
         {
@@ -282,7 +292,11 @@ describe("AnthropicAdapter", () => {
             {
               role: "user",
               content: [
-                // Image block should be filtered out
+                // Expect mapped image block + text block
+                {
+                  type: "image",
+                  source: { type: "url", url: imageUrl },
+                },
                 { type: "text", text: "What is in this image URL?" },
               ],
             },
@@ -496,7 +510,80 @@ describe("AnthropicAdapter", () => {
       });
     });
 
-    // Note: Anthropic adapter doesn't handle visionUrl in sendChat, generateResponse handles it if passed in messages
+    it("should include visionUrl as ImageBlock in messages passed to generateResponse", async () => {
+      const chatWithVision: Chat = {
+        ...baseChat,
+        visionUrl: "http://example.com/vision.jpg",
+        prompt: "Describe this vision image",
+      } as Chat;
+
+      // Ensure the adapter instance being tested is vision capable
+      adapter.isVisionCapable = true; // Explicitly set for clarity if needed, though mockClaude3Opus is
+
+      await adapter.sendChat(chatWithVision);
+
+      expect(generateResponseSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [
+            // Expect user message with ImageBlock first, then TextBlock
+            {
+              role: "user",
+              content: [
+                { type: "image", url: "http://example.com/vision.jpg" },
+                { type: "text", text: "Describe this vision image" },
+              ],
+            },
+          ],
+        })
+      );
+    });
+
+    it("should ignore visionUrl if model is not vision capable", async () => {
+      // Create an adapter instance with a non-vision model config for this test
+      const nonVisionAdapter = new AnthropicAdapter(mockConfig, {
+        ...mockClaude3Sonnet, // Use Sonnet but override vision
+        isVision: false,
+      });
+      // Spy on the non-vision adapter's generateResponse
+      const nonVisionGenerateSpy = jest
+        .spyOn(nonVisionAdapter, "generateResponse")
+        .mockResolvedValue({
+          role: "assistant",
+          content: [{ type: "text", text: "Mocked non-vision response" }],
+          usage: { inputCost: 0.01, outputCost: 0.02, totalCost: 0.03 },
+        });
+      // Spy on console.warn
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+      const chatWithVision: Chat = {
+        ...baseChat,
+        visionUrl: "http://example.com/vision.jpg",
+        prompt: "Describe this vision image",
+      } as Chat;
+
+      await nonVisionAdapter.sendChat(chatWithVision);
+
+      expect(nonVisionGenerateSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [
+            // Expect only the text prompt, no image block
+            {
+              role: "user",
+              content: [{ type: "text", text: "Describe this vision image" }],
+            },
+          ],
+        })
+      );
+      // Verify the warning was logged
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "Vision URL provided for non-vision capable Anthropic model"
+        )
+      );
+
+      nonVisionGenerateSpy.mockRestore();
+      consoleWarnSpy.mockRestore();
+    });
   });
 
   // --- generateImage Tests ---

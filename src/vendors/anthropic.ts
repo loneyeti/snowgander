@@ -8,9 +8,11 @@ import {
   Chat,
   ChatResponse,
   ContentBlock,
-  ToolUseBlock, // Import ToolUseBlock
+  ToolUseBlock,
   MCPTool,
   UsageResponse,
+  ImageBlock, // Add ImageBlock for URL-based images
+  ImageDataBlock, // Add ImageDataBlock for base64 images (though Anthropic example uses URL)
 } from "../types";
 import { computeResponseCost } from "../utils";
 // Import necessary types from Anthropic SDK
@@ -140,8 +142,51 @@ export class AnthropicAdapter implements AIVendorAdapter {
               "Skipping tool_use block due to missing ID or invalid input type."
             );
           }
+        } else if (
+          block.type === "image" &&
+          this.isVisionCapable &&
+          msg.role === "user"
+        ) {
+          // Handle ImageBlock (URL) for vision-capable models in user messages
+          // Map to Anthropic's expected format based on their documentation example
+          acc.push({
+            type: "image",
+            source: {
+              type: "url",
+              // Ensure 'url' property exists on our ImageBlock type
+              url: block.url,
+            },
+          } as any); // Use 'as any' for now if the SDK type doesn't perfectly align or needs broader compatibility
+        } else if (
+          block.type === "image_data" &&
+          this.isVisionCapable &&
+          msg.role === "user"
+        ) {
+          // Handle ImageDataBlock (base64) - Anthropic example only shows URL source.
+          // Warn the developer, as this might not be directly supported or requires different formatting.
+          console.warn(
+            "Anthropic adapter received ImageDataBlock (base64). Anthropic API example uses URL source. Skipping image. Check Anthropic documentation for base64 support."
+          );
+          // If Anthropic *did* support base64 via a specific format (e.g., type: 'base64'), the mapping would go here.
+          // Example (hypothetical, verify with docs):
+          // acc.push({
+          //   type: "image",
+          //   source: {
+          //     type: "base64",
+          //     media_type: block.mimeType,
+          //     data: block.base64Data,
+          //   }
+          // } as any);
+        } else if (
+          (block.type === "image" || block.type === "image_data") &&
+          (!this.isVisionCapable || msg.role !== "user")
+        ) {
+          // Skip images if model isn't vision capable or if not in a user message
+          console.warn(
+            `Skipping image block (type: ${block.type}) in role '${msg.role}' for model '${model}'. Vision capable: ${this.isVisionCapable}`
+          );
         }
-        // Note: We intentionally skip image blocks as Anthropic vision handling is different.
+        // Note: Image blocks are now handled above.
         return acc;
       }, []);
 
@@ -238,10 +283,34 @@ export class AnthropicAdapter implements AIVendorAdapter {
   async sendChat(chat: Chat): Promise<ChatResponse> {
     // Combine history with the current prompt
     const messagesToSend = [...chat.responseHistory]; // Copy history
+
+    // Prepare content for the current user message, potentially including an image
+    let currentUserContent: ContentBlock[] = [];
+
+    // Add image first if provided and model supports vision (Anthropic expects image before text)
+    if (chat.visionUrl && this.isVisionCapable) {
+      const imageBlock: ImageBlock = {
+        type: "image", // Use 'image' type for URL-based images
+        url: chat.visionUrl,
+      };
+      currentUserContent.push(imageBlock);
+    } else if (chat.visionUrl && !this.isVisionCapable) {
+      console.warn(
+        `Vision URL provided for non-vision capable Anthropic model '${chat.model}'. Ignoring image.`
+      );
+    }
+
+    // Add text prompt after image (if any)
     if (chat.prompt) {
+      currentUserContent.push({ type: "text", text: chat.prompt });
+    }
+
+    // Add the combined user message content to the history if it's not empty
+    if (currentUserContent.length > 0) {
+      // Ensure the content array isn't empty before pushing
       messagesToSend.push({
         role: "user",
-        content: [{ type: "text", text: chat.prompt }], // Add current prompt as user message
+        content: currentUserContent, // Pass the array potentially containing image and text
       });
     }
 
