@@ -100,6 +100,12 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       generationConfig.maxOutputTokens = maxTokens;
     }
 
+    // Conditionally add responseModalities if the model is capable of image generation
+    if (this.isImageGenerationCapable) {
+      // Use 'as any' as this might not be in the official SDK types yet
+      (generationConfig as any).responseModalities = ["Text", "Image"];
+    }
+
     const genAI = this.client.getGenerativeModel({
       model,
       generationConfig: generationConfig,
