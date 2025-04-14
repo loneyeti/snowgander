@@ -2,9 +2,9 @@
 
 ## Current Focus
 
-- **Task:** Update the Memory Bank for the AI Vendor Abstraction Layer project (`snowgander`) based on review of `src/types.ts` and `src/factory.ts`.
-- **Action:** Reviewing key files in the `src/` directory with particular attention to `types.ts` (defining the core interfaces and data structures) and `factory.ts` (implementing the adapter factory pattern).
-- **Goal:** Ensure Memory Bank accurately reflects the current implementation, with special focus on the type system and factory pattern implementation.
+- **Task:** Implement OpenRouter reasoning token support.
+- **Action:** Modified `src/vendors/openrouter.ts` and `src/vendors/__tests__/openrouter.test.ts`.
+- **Goal:** Allow users to leverage OpenRouter's reasoning capabilities using the existing `budgetTokens` parameter and `isThinking` flag, maintaining vendor neutrality in the core interfaces.
 
 ## Key Observations During Review
 
@@ -22,11 +22,13 @@
   - Ensures proper configuration injection into adapters via constructor parameters
   - Supports multiple vendors (OpenAI, Anthropic, Google, OpenRouter)
 
-- **Adapter Evolution:** Examining the Anthropic adapter shows:
+- **Adapter Evolution:**
+
+  - **Anthropic:** Integrates tool handling directly in `sendChat`/`generateResponse`. Uses `thinkingMode` and `budgetTokens` for its specific thinking implementation.
+  - **OpenRouter:** Now supports reasoning tokens. It uses the `isThinking` capability flag and the `budgetTokens` parameter (passed as `reasoning: { max_tokens: ... }` to the API). Reasoning output is parsed into a `ThinkingBlock`. This aligns OpenRouter's reasoning with Anthropic's thinking mechanism using shared interface fields (`isThinking`, `budgetTokens`, `ThinkingBlock`).
 
   - Tools are handled directly in `sendChat` and `generateResponse` methods
-  - The `sendMCPChat` method no longer exists in the Anthropic adapter, suggesting these functions are now integrated
-  - Detailed mapping of content blocks between our system format and Anthropic's API format
+  - Detailed mapping of content blocks between our system format and vendor API formats continues to be refined.
 
 - **Index Exports:** The `index.ts` file cleanly exports:
   - The factory as the primary interface for consuming applications
@@ -35,6 +37,8 @@
 
 ## Next Steps
 
-1.  Update `progress.md` to reflect the current state of implementation, noting any changes to tool handling and content block processing.
-2.  Consider reviewing the implementation of other adapters (OpenAI, Google, OpenRouter) to verify consistent patterns.
-3.  Document any evolving patterns in how the library handles MCP tools, especially since the direct `sendMCPChat` method approach appears to have been replaced.
+1.  Update `progress.md` to reflect the addition of OpenRouter reasoning support and the unified approach using `isThinking`/`budgetTokens`.
+2.  Update `systemPatterns.md` to clarify the unified handling of thinking/reasoning.
+3.  Update `.clinerules` with the pattern of using `isThinking`/`budgetTokens` for both Anthropic and OpenRouter.
+4.  Run tests (`npm test`) to confirm changes.
+5.  Attempt completion.

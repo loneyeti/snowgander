@@ -15,7 +15,9 @@
 - **Capability Flags:** Adapters report their capabilities (`isVisionCapable`, `isImageGenerationCapable`, `isThinkingCapable`) based on the injected `ModelConfig`.
 - **Cost Calculation:** Token usage tracking and cost calculation is implemented using `computeResponseCost` utility and returned in `UsageResponse` objects.
 - **Vendor Support:** Adapters exist for OpenAI, Anthropic, Google AI, and OpenRouter with consistent factory instantiation.
-- **Thinking Blocks:** Anthropic adapter fully supports thinking mode through the `thinkingMode` option.
+- **Thinking/Reasoning Blocks:**
+  - **Anthropic:** Fully supports thinking mode via `thinkingMode`/`budgetTokens`.
+  - **OpenRouter:** Now supports reasoning tokens via the shared `isThinking` flag and `budgetTokens` parameter. Reasoning output is parsed into `ThinkingBlock`.
 - **Google Vision Handling:** `GoogleAIAdapter` now fetches images from URLs (`visionUrl`), determines MIME type, base64 encodes, and sends them to the API (using `axios` and `file-type`).
 
 ## What's Left to Build / TODOs
@@ -37,8 +39,9 @@
 ## Current Status
 
 - **Solid Foundation:** The core abstraction layer, comprehensive type system, factory pattern, and adapter implementations are fully in place.
-- **Memory Bank Updated:** Documentation has been updated to reflect the current project state (as of 2025-04-05).
+- **Memory Bank Updated:** Documentation has been updated to reflect the current project state (as of 2025-04-14).
 - **Tool Handling Evolution:** The approach to tool handling appears to have evolved, with at least the Anthropic adapter integrating MCP tool support directly rather than using a separate `sendMCPChat` method.
+- **Unified Thinking/Reasoning:** A consistent pattern using `isThinking`, `budgetTokens`, and `ThinkingBlock` is now used for both Anthropic and OpenRouter.
 - **Ready for Consistency Verification:** The next step is to verify that all adapters handle tools, content blocks, and capabilities with a consistent approach.
 
 ## Known Issues / Limitations

@@ -7,7 +7,8 @@ This file captures key learnings, patterns, and preferences for the AI Vendor Ab
 - **Adapter + Factory:** The core architecture relies on the Adapter pattern (`AIVendorAdapter`) for vendor implementation and the Factory pattern (`AIVendorFactory`) for instantiation.
 - **ContentBlocks:** Use the `ContentBlock[]` system (`types.ts`) consistently for all message content (input/output) to ensure uniformity across adapters.
 - **Configuration Injection:** Vendor/model configuration (`VendorConfig`, `ModelConfig`) should be injected into the factory/adapters, not hardcoded.
-- **Capability Flags:** Rely on adapter capability flags (`isVisionCapable`, etc.) to determine supported features.
+- **Capability Flags:** Rely on adapter capability flags (`isVisionCapable`, `isImageGenerationCapable`, `isThinkingCapable`) to determine supported features.
+- **Unified Thinking/Reasoning:** Use the `isThinkingCapable` flag (in `ModelConfig`), the `budgetTokens` parameter (in `Chat`), and the `ThinkingBlock` content type to handle both Anthropic's thinking and OpenRouter's reasoning features consistently.
 - **Cost Calculation:** Utilize the `computeResponseCost` utility and `UsageResponse` for standardized cost tracking.
 
 ## Current Limitations / Areas for Attention
@@ -28,3 +29,4 @@ This file captures key learnings, patterns, and preferences for the AI Vendor Ab
 
 - **2025-04-03:** Initial Memory Bank and `.clinerules` created based on code review. Focus is on establishing baseline documentation.
 - **2025-04-05:** Updated Memory Bank based on detailed review of `types.ts`, `factory.ts`, and examination of adapters. Discovered evolution in tool handling approach with the Anthropic adapter now directly supporting MCP tools in its standard methods.
+- **2025-04-14:** Added OpenRouter reasoning support. Established a unified pattern using `isThinkingCapable`, `budgetTokens`, and `ThinkingBlock` for both Anthropic thinking and OpenRouter reasoning. Updated `OpenRouterAdapter` and its tests. Updated Memory Bank files (`activeContext.md`, `progress.md`, `systemPatterns.md`).

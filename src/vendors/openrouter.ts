@@ -52,6 +52,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       maxTokens,
       temperature = 1,
       systemPrompt,
+      budgetTokens, // Destructure budgetTokens
     } = options;
 
     // Prepare messages for OpenAI Chat Completions format
@@ -190,11 +191,18 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       );
     }
 
+    // Prepare reasoning options if applicable
+    const reasoningParams =
+      this.isThinkingCapable && budgetTokens && budgetTokens > 0
+        ? { reasoning: { max_tokens: budgetTokens } }
+        : {};
+
     const response = await this.client.chat.completions.create({
       model,
       messages: apiMessages,
       max_tokens: maxTokens,
       temperature,
+      ...reasoningParams, // Spread reasoning parameters if they exist
     });
 
     let usage: UsageResponse | undefined = undefined;
@@ -219,15 +227,32 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     if (content === null || content === undefined) {
       // Check for null or undefined
       // Revert to throwing an error as expected by the test
-      throw new Error("No content received from OpenRouter");
+      // Consider if other finish reasons should also throw or return empty
+      throw new Error(
+        `No content received from OpenRouter. Finish reason: ${response.choices[0]?.finish_reason}`
+      );
     }
 
-    const responseBlock: ContentBlock[] = [
-      {
-        type: "text",
-        text: content,
-      },
-    ];
+    const responseBlock: ContentBlock[] = [];
+
+    // Check for reasoning content (assuming OpenRouter adds it to the message object)
+    // Note: The exact structure might differ; adjust based on actual API response.
+    // The OpenRouter docs example uses response.json()['choices'][0]['message']['reasoning']
+    // The OpenAI SDK type might not have this field directly, so we access it dynamically.
+    const reasoningContent = (response.choices[0]?.message as any)?.reasoning;
+    if (reasoningContent && typeof reasoningContent === "string") {
+      responseBlock.push({
+        type: "thinking", // Use ThinkingBlock as requested
+        thinking: reasoningContent,
+        signature: "openrouter", // Add a signature
+      });
+    }
+
+    // Add the main text content
+    responseBlock.push({
+      type: "text",
+      text: content,
+    });
 
     return {
       role: response.choices[0]?.message?.role || "assistant",
@@ -249,6 +274,7 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       model: chat.model,
       messages: [...chat.responseHistory], // Start with history
       maxTokens: chat.maxTokens || undefined,
+      budgetTokens: chat.budgetTokens || undefined, // Pass budgetTokens
       systemPrompt: chat.systemPrompt,
       // visionUrl is removed, handled within messages now
     };

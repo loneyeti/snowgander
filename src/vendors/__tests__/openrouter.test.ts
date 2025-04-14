@@ -48,8 +48,8 @@ describe("OpenRouterAdapter", () => {
   const mockModelConfig: ModelConfig = {
     apiName: "openai/gpt-4-turbo", // Example OpenRouter model name
     isVision: true,
-    isImageGeneration: false, // Assume this model doesn't generate images
-    isThinking: false, // Assume this model doesn't support thinking blocks
+    isImageGeneration: false,
+    isThinking: true, // Enable thinking for testing reasoning
     inputTokenCost: 10 / 1_000_000,
     outputTokenCost: 30 / 1_000_000,
   };
@@ -102,6 +102,7 @@ describe("OpenRouterAdapter", () => {
       maxTokens: 150,
       temperature: 0.7,
       systemPrompt: "You are a helpful assistant.",
+      budgetTokens: 50, // Add budgetTokens for reasoning tests
     };
 
     const mockApiResponse: OpenAI.Chat.Completions.ChatCompletion = {
@@ -126,8 +127,23 @@ describe("OpenRouterAdapter", () => {
         completion_tokens: 5,
         total_tokens: 15,
       },
-      // system_fingerprint: null, // Property might not exist depending on SDK version/response
+      // system_fingerprint: null,
     };
+
+    // Mock API response WITH reasoning
+    const mockApiResponseWithReasoning: OpenAI.Chat.Completions.ChatCompletion =
+      {
+        ...mockApiResponse,
+        choices: [
+          {
+            ...mockApiResponse.choices[0],
+            message: {
+              ...(mockApiResponse.choices[0].message as any), // Keep existing fields
+              reasoning: "Thinking step 1...", // Add reasoning field
+            },
+          },
+        ],
+      };
 
     const mockExpectedUsage: UsageResponse = {
       inputCost: 0.0001, // Mocked calculation result
@@ -155,7 +171,47 @@ describe("OpenRouterAdapter", () => {
         ],
         max_tokens: mockRequestOptions.maxTokens,
         temperature: mockRequestOptions.temperature,
+        // Expect reasoning param when isThinkingCapable=true and budgetTokens > 0
+        reasoning: { max_tokens: mockRequestOptions.budgetTokens },
       });
+    });
+
+    it("should NOT pass reasoning param if budgetTokens is missing or zero", async () => {
+      const optionsWithoutBudget: AIRequestOptions = {
+        ...mockRequestOptions,
+        budgetTokens: 0, // Test with zero budget
+      };
+      await adapter.generateResponse(optionsWithoutBudget);
+
+      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          reasoning: expect.anything(),
+        })
+      );
+
+      const optionsWithNullBudget: AIRequestOptions = {
+        ...mockRequestOptions,
+        budgetTokens: undefined, // Test with undefined budget
+      };
+      await adapter.generateResponse(optionsWithNullBudget);
+
+      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          reasoning: expect.anything(),
+        })
+      );
+    });
+
+    it("should NOT pass reasoning param if isThinkingCapable is false", async () => {
+      adapter.isThinkingCapable = false; // Override for this test
+      await adapter.generateResponse(mockRequestOptions); // budgetTokens is still set
+
+      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          reasoning: expect.anything(),
+        })
+      );
+      adapter.isThinkingCapable = mockModelConfig.isThinking; // Restore original value
     });
 
     it("should handle messages with simple string content", async () => {
@@ -233,6 +289,22 @@ describe("OpenRouterAdapter", () => {
 
       expect(response.role).toBe("assistant");
       expect(response.content).toEqual([
+        { type: "text", text: "General Kenobi!" },
+      ]);
+    });
+
+    it("should parse reasoning field into ThinkingBlock when present", async () => {
+      // Use the mock response that includes reasoning
+      mockCompletionsCreate.mockResolvedValue(mockApiResponseWithReasoning);
+      const response = await adapter.generateResponse(mockRequestOptions);
+
+      expect(response.role).toBe("assistant");
+      expect(response.content).toEqual([
+        {
+          type: "thinking",
+          thinking: "Thinking step 1...",
+          signature: "openrouter",
+        },
         { type: "text", text: "General Kenobi!" },
       ]);
     });
@@ -332,15 +404,16 @@ describe("OpenRouterAdapter", () => {
             content: [{ type: "text", text: mockChat.prompt! }],
           }, // Added prompt
         ],
-        // Reflect adapter's mapping: null -> undefined
         maxTokens: mockChat.maxTokens === null ? undefined : mockChat.maxTokens,
+        budgetTokens:
+          mockChat.budgetTokens === null ? undefined : mockChat.budgetTokens, // Pass budgetTokens
         systemPrompt: mockChat.systemPrompt,
-        visionUrl: undefined, // Correctly maps null from mockChat.visionUrl to undefined
-        // Add other mapped properties if the adapter uses them (e.g., modelId, budgetTokens)
-        // modelId: mockChat.modelId, // Example if needed
-        // budgetTokens: undefined, // Example if budgetTokens: null maps to undefined
+        // visionUrl: undefined, // visionUrl is handled internally now
       };
-      expect(adapter.generateResponse).toHaveBeenCalledWith(expectedOptions);
+      // Use objectContaining because the internal messages array is constructed
+      expect(adapter.generateResponse).toHaveBeenCalledWith(
+        expect.objectContaining(expectedOptions)
+      );
     });
 
     it("should handle Chat object without a prompt", async () => {
@@ -354,17 +427,21 @@ describe("OpenRouterAdapter", () => {
         // Adapter logic adds prompt message only if chat.prompt is truthy.
         // Since it's "", it shouldn't be added here.
         messages: chatWithoutPrompt.responseHistory,
-        // Reflect adapter's mapping: null -> undefined
         maxTokens:
           chatWithoutPrompt.maxTokens === null
             ? undefined
             : chatWithoutPrompt.maxTokens,
+        budgetTokens:
+          chatWithoutPrompt.budgetTokens === null
+            ? undefined
+            : chatWithoutPrompt.budgetTokens, // Pass budgetTokens
         systemPrompt: chatWithoutPrompt.systemPrompt,
-        visionUrl: undefined, // Correctly maps null to undefined
-        // modelId: chatWithoutPrompt.modelId, // Example if needed
-        // budgetTokens: undefined, // Example if needed
+        // visionUrl: undefined, // visionUrl is handled internally now
       };
-      expect(adapter.generateResponse).toHaveBeenCalledWith(expectedOptions);
+      // Use objectContaining because the internal messages array is constructed
+      expect(adapter.generateResponse).toHaveBeenCalledWith(
+        expect.objectContaining(expectedOptions)
+      );
     });
 
     it("should return ChatResponse based on generateResponse result", async () => {
