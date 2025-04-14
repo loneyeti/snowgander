@@ -179,14 +179,14 @@ describe("OpenRouterAdapter", () => {
       );
     });
 
-    it("should warn and extract text from complex ContentBlock arrays", async () => {
-      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
+    // RENAME and REWRITE this test to reflect correct multimodal handling
+    it("should correctly format multimodal content (text and image) for user messages", async () => {
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation(); // Keep spy to ensure NO warnings are issued for valid multimodal
       const complexMessage: Message = {
         role: "user",
         content: [
           { type: "text", text: "First part." },
-          // Changed type from "image_url" to "image" (valid ContentBlock type for URLs)
-          { type: "image", url: "http://example.com/img.png" },
+          { type: "image", url: "http://example.com/img.png" }, // Use ImageBlock
           { type: "text", text: "Second part." },
         ],
       };
@@ -195,16 +195,33 @@ describe("OpenRouterAdapter", () => {
         messages: [complexMessage],
       };
 
+      // Ensure the adapter is vision capable for this test
+      adapter.isVisionCapable = true;
+
       await adapter.generateResponse(optionsWithComplexContent);
 
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
+      // Ensure the old warning is NOT called
+      expect(consoleWarnSpy).not.toHaveBeenCalledWith(
         "OpenRouter adapter received complex content block, attempting simple text extraction."
       );
+
+      // Check that completions.create was called with the correct multimodal format
       expect(mockCompletionsCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           messages: [
             { role: "system", content: mockRequestOptions.systemPrompt },
-            { role: "user", content: "First part.\n\nSecond part." }, // Check extracted text
+            {
+              role: "user",
+              content: [
+                // Expect an array of content parts
+                { type: "text", text: "First part." },
+                {
+                  type: "image_url",
+                  image_url: { url: "http://example.com/img.png" },
+                },
+                { type: "text", text: "Second part." },
+              ],
+            },
           ],
         })
       );

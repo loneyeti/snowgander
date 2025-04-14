@@ -103,7 +103,7 @@ export interface MCPTool {
 // Represents a single message in a chat history or request
 export interface Message {
   role: string; // e.g., 'user', 'assistant', 'system'
-  content: ContentBlock[]; // Content can be simple text or structured blocks
+  content: ContentBlock[]; // Content must be an array of ContentBlocks
 }
 
 export interface UsageResponse {
