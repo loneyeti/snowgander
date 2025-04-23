@@ -11,12 +11,15 @@ import {
   TextBlock,
   UsageResponse,
   Message,
+  NotImplementedError, // Added missing import
+  ImageGenerationResponse, // Added missing import (needed for generateImage signature)
+  ImageBlock, // Keep existing imports
+  ImageDataBlock, // Keep existing imports
 } from "../../types";
 import { computeResponseCost } from "../../utils";
 
 // Mock the OpenAI SDK
 jest.mock("openai", () => {
-  // Mock the constructor and specific methods needed
   const mockCompletionsCreate = jest.fn();
   return jest.fn().mockImplementation(() => ({
     chat: {
@@ -24,7 +27,6 @@ jest.mock("openai", () => {
         create: mockCompletionsCreate,
       },
     },
-    // Mock other methods if needed
   }));
 });
 
@@ -33,7 +35,6 @@ jest.mock("../../utils", () => ({
   computeResponseCost: jest.fn(),
 }));
 
-// Define mock instances and methods for clarity in tests
 const MockedOpenAI = OpenAI as jest.MockedClass<typeof OpenAI>;
 const mockCompletionsCreate = new MockedOpenAI().chat.completions
   .create as jest.Mock;
@@ -43,13 +44,13 @@ describe("OpenRouterAdapter", () => {
   let adapter: OpenRouterAdapter;
   const mockVendorConfig: VendorConfig = {
     apiKey: "test-openrouter-key",
-    baseURL: "https://custom.openrouter.ai/api/v1", // Test custom baseURL
+    baseURL: "https://custom.openrouter.ai/api/v1",
   };
   const mockModelConfig: ModelConfig = {
-    apiName: "openai/gpt-4-turbo", // Example OpenRouter model name
+    apiName: "openai/gpt-4-turbo",
     isVision: true,
     isImageGeneration: false,
-    isThinking: true, // Enable thinking for testing reasoning
+    isThinking: true,
     inputTokenCost: 10 / 1_000_000,
     outputTokenCost: 30 / 1_000_000,
   };
@@ -60,9 +61,7 @@ describe("OpenRouterAdapter", () => {
   };
 
   beforeEach(() => {
-    // Clear mocks before each test
     jest.clearAllMocks();
-    // Create a new adapter instance for each test
     adapter = new OpenRouterAdapter(mockVendorConfig, mockModelConfig);
   });
 
@@ -70,7 +69,7 @@ describe("OpenRouterAdapter", () => {
     expect(MockedOpenAI).toHaveBeenCalledTimes(1);
     expect(MockedOpenAI).toHaveBeenCalledWith({
       apiKey: mockVendorConfig.apiKey,
-      baseURL: mockVendorConfig.baseURL, // Verify custom baseURL is used
+      baseURL: mockVendorConfig.baseURL,
     });
   });
 
@@ -79,7 +78,7 @@ describe("OpenRouterAdapter", () => {
     new OpenRouterAdapter(configWithoutBaseURL, mockModelConfig);
     expect(MockedOpenAI).toHaveBeenCalledWith({
       apiKey: configWithoutBaseURL.apiKey,
-      baseURL: "https://openrouter.ai/api/v1", // Verify default baseURL
+      baseURL: "https://openrouter.ai/api/v1",
     });
   });
 
@@ -102,7 +101,7 @@ describe("OpenRouterAdapter", () => {
       maxTokens: 150,
       temperature: 0.7,
       systemPrompt: "You are a helpful assistant.",
-      budgetTokens: 50, // Add budgetTokens for reasoning tests
+      budgetTokens: 50,
     };
 
     const mockApiResponse: OpenAI.Chat.Completions.ChatCompletion = {
@@ -116,7 +115,7 @@ describe("OpenRouterAdapter", () => {
           message: {
             role: "assistant",
             content: "General Kenobi!",
-            refusal: null, // Added missing property
+            refusal: null,
           },
           logprobs: null,
           finish_reason: "stop",
@@ -127,10 +126,8 @@ describe("OpenRouterAdapter", () => {
         completion_tokens: 5,
         total_tokens: 15,
       },
-      // system_fingerprint: null,
     };
 
-    // Mock API response WITH reasoning
     const mockApiResponseWithReasoning: OpenAI.Chat.Completions.ChatCompletion =
       {
         ...mockApiResponse,
@@ -138,25 +135,24 @@ describe("OpenRouterAdapter", () => {
           {
             ...mockApiResponse.choices[0],
             message: {
-              ...(mockApiResponse.choices[0].message as any), // Keep existing fields
-              reasoning: "Thinking step 1...", // Add reasoning field
+              ...(mockApiResponse.choices[0].message as any),
+              reasoning: "Thinking step 1...",
             },
           },
         ],
       };
 
     const mockExpectedUsage: UsageResponse = {
-      inputCost: 0.0001, // Mocked calculation result
-      outputCost: 0.00015, // Mocked calculation result
+      inputCost: 0.0001,
+      outputCost: 0.00015,
       totalCost: 0.00025,
     };
 
     beforeEach(() => {
-      // Setup mock return values for dependencies
       mockCompletionsCreate.mockResolvedValue(mockApiResponse);
       mockComputeResponseCost
-        .mockReturnValueOnce(mockExpectedUsage.inputCost) // First call for input cost
-        .mockReturnValueOnce(mockExpectedUsage.outputCost); // Second call for output cost
+        .mockReturnValueOnce(mockExpectedUsage.inputCost)
+        .mockReturnValueOnce(mockExpectedUsage.outputCost);
     });
 
     it("should call OpenAI completions.create with correct parameters", async () => {
@@ -167,11 +163,10 @@ describe("OpenRouterAdapter", () => {
         model: mockRequestOptions.model,
         messages: [
           { role: "system", content: mockRequestOptions.systemPrompt },
-          { role: "user", content: "Hello there!" }, // Simple text extraction assumed for now
+          { role: "user", content: "Hello there!" },
         ],
         max_tokens: mockRequestOptions.maxTokens,
         temperature: mockRequestOptions.temperature,
-        // Expect reasoning param when isThinkingCapable=true and budgetTokens > 0
         reasoning: { max_tokens: mockRequestOptions.budgetTokens },
       });
     });
@@ -179,7 +174,7 @@ describe("OpenRouterAdapter", () => {
     it("should NOT pass reasoning param if budgetTokens is missing or zero", async () => {
       const optionsWithoutBudget: AIRequestOptions = {
         ...mockRequestOptions,
-        budgetTokens: 0, // Test with zero budget
+        budgetTokens: 0,
       };
       await adapter.generateResponse(optionsWithoutBudget);
 
@@ -191,7 +186,7 @@ describe("OpenRouterAdapter", () => {
 
       const optionsWithNullBudget: AIRequestOptions = {
         ...mockRequestOptions,
-        budgetTokens: undefined, // Test with undefined budget
+        budgetTokens: undefined,
       };
       await adapter.generateResponse(optionsWithNullBudget);
 
@@ -203,21 +198,20 @@ describe("OpenRouterAdapter", () => {
     });
 
     it("should NOT pass reasoning param if isThinkingCapable is false", async () => {
-      adapter.isThinkingCapable = false; // Override for this test
-      await adapter.generateResponse(mockRequestOptions); // budgetTokens is still set
+      adapter.isThinkingCapable = false;
+      await adapter.generateResponse(mockRequestOptions);
 
       expect(mockCompletionsCreate).toHaveBeenCalledWith(
         expect.not.objectContaining({
           reasoning: expect.anything(),
         })
       );
-      adapter.isThinkingCapable = mockModelConfig.isThinking; // Restore original value
+      adapter.isThinkingCapable = mockModelConfig.isThinking;
     });
 
     it("should handle messages with simple string content", async () => {
       const optionsWithStringContent: AIRequestOptions = {
         ...mockRequestOptions,
-        // Corrected content to be ContentBlock[]
         messages: [
           { role: "user", content: [{ type: "text", text: "Just a string" }] },
         ],
@@ -228,21 +222,19 @@ describe("OpenRouterAdapter", () => {
         expect.objectContaining({
           messages: [
             { role: "system", content: mockRequestOptions.systemPrompt },
-            // Ensure the expected content matches the corrected input format
             { role: "user", content: "Just a string" },
           ],
         })
       );
     });
 
-    // RENAME and REWRITE this test to reflect correct multimodal handling
     it("should correctly format multimodal content (text and image) for user messages", async () => {
-      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation(); // Keep spy to ensure NO warnings are issued for valid multimodal
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
       const complexMessage: Message = {
         role: "user",
         content: [
           { type: "text", text: "First part." },
-          { type: "image", url: "http://example.com/img.png" }, // Use ImageBlock
+          { type: "image", url: "http://example.com/img.png" },
           { type: "text", text: "Second part." },
         ],
       };
@@ -251,17 +243,14 @@ describe("OpenRouterAdapter", () => {
         messages: [complexMessage],
       };
 
-      // Ensure the adapter is vision capable for this test
       adapter.isVisionCapable = true;
 
       await adapter.generateResponse(optionsWithComplexContent);
 
-      // Ensure the old warning is NOT called
       expect(consoleWarnSpy).not.toHaveBeenCalledWith(
         "OpenRouter adapter received complex content block, attempting simple text extraction."
       );
 
-      // Check that completions.create was called with the correct multimodal format
       expect(mockCompletionsCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           messages: [
@@ -269,7 +258,6 @@ describe("OpenRouterAdapter", () => {
             {
               role: "user",
               content: [
-                // Expect an array of content parts
                 { type: "text", text: "First part." },
                 {
                   type: "image_url",
@@ -294,7 +282,6 @@ describe("OpenRouterAdapter", () => {
     });
 
     it("should parse reasoning field into ThinkingBlock when present", async () => {
-      // Use the mock response that includes reasoning
       mockCompletionsCreate.mockResolvedValue(mockApiResponseWithReasoning);
       const response = await adapter.generateResponse(mockRequestOptions);
 
@@ -338,7 +325,7 @@ describe("OpenRouterAdapter", () => {
     it("should return undefined usage if API response has no usage data", async () => {
       mockCompletionsCreate.mockResolvedValue({
         ...mockApiResponse,
-        usage: undefined, // Simulate missing usage
+        usage: undefined,
       });
       const response = await adapter.generateResponse(mockRequestOptions);
 
@@ -354,7 +341,7 @@ describe("OpenRouterAdapter", () => {
             ...mockApiResponse.choices[0],
             message: { role: "assistant", content: null },
           },
-        ], // Simulate null content
+        ],
       });
 
       await expect(
@@ -364,8 +351,6 @@ describe("OpenRouterAdapter", () => {
   });
 
   describe("sendChat", () => {
-    // Removed id and userId as they are not in the Chat type
-    // Added missing required properties
     const mockChat: Chat = {
       model: mockModelConfig.apiName,
       systemPrompt: "Act like a pirate.",
@@ -375,19 +360,18 @@ describe("OpenRouterAdapter", () => {
       ],
       prompt: "Where's the treasure?",
       maxTokens: 100,
-      visionUrl: null, // Added null value
+      visionUrl: null,
       imageURL: null,
-      budgetTokens: null, // Added null value
+      budgetTokens: null,
     };
 
     const mockAIResponse: AIResponse = {
       role: "assistant",
       content: [{ type: "text", text: "On Treasure Island, matey!" }],
-      usage: { inputCost: 0.1, outputCost: 0.2, totalCost: 0.3 }, // Example usage
+      usage: { inputCost: 0.1, outputCost: 0.2, totalCost: 0.3 },
     };
 
     beforeEach(() => {
-      // Mock generateResponse as sendChat calls it internally
       jest.spyOn(adapter, "generateResponse").mockResolvedValue(mockAIResponse);
     });
 
@@ -402,30 +386,25 @@ describe("OpenRouterAdapter", () => {
           {
             role: "user",
             content: [{ type: "text", text: mockChat.prompt! }],
-          }, // Added prompt
+          },
         ],
         maxTokens: mockChat.maxTokens === null ? undefined : mockChat.maxTokens,
         budgetTokens:
-          mockChat.budgetTokens === null ? undefined : mockChat.budgetTokens, // Pass budgetTokens
+          mockChat.budgetTokens === null ? undefined : mockChat.budgetTokens,
         systemPrompt: mockChat.systemPrompt,
-        // visionUrl: undefined, // visionUrl is handled internally now
       };
-      // Use objectContaining because the internal messages array is constructed
       expect(adapter.generateResponse).toHaveBeenCalledWith(
         expect.objectContaining(expectedOptions)
       );
     });
 
     it("should handle Chat object without a prompt", async () => {
-      // Set prompt to empty string "" as it's required by Chat type
       const chatWithoutPrompt: Chat = { ...mockChat, prompt: "" };
       await adapter.sendChat(chatWithoutPrompt);
 
       expect(adapter.generateResponse).toHaveBeenCalledTimes(1);
       const expectedOptions: AIRequestOptions = {
         model: chatWithoutPrompt.model,
-        // Adapter logic adds prompt message only if chat.prompt is truthy.
-        // Since it's "", it shouldn't be added here.
         messages: chatWithoutPrompt.responseHistory,
         maxTokens:
           chatWithoutPrompt.maxTokens === null
@@ -434,11 +413,9 @@ describe("OpenRouterAdapter", () => {
         budgetTokens:
           chatWithoutPrompt.budgetTokens === null
             ? undefined
-            : chatWithoutPrompt.budgetTokens, // Pass budgetTokens
+            : chatWithoutPrompt.budgetTokens,
         systemPrompt: chatWithoutPrompt.systemPrompt,
-        // visionUrl: undefined, // visionUrl is handled internally now
       };
-      // Use objectContaining because the internal messages array is constructed
       expect(adapter.generateResponse).toHaveBeenCalledWith(
         expect.objectContaining(expectedOptions)
       );
@@ -456,41 +433,16 @@ describe("OpenRouterAdapter", () => {
   });
 
   describe("generateImage", () => {
-    it("should throw an error as it is not supported", async () => {
-      // Removed id and userId, added missing required properties
-      const mockChat: Chat = {
-        model: mockModelConfig.apiName,
-        prompt: "Generate an image",
-        responseHistory: [],
-        visionUrl: null,
-        imageURL: null,
-        maxTokens: null, // Use null as per type def
-        budgetTokens: null,
-      };
-      await expect(adapter.generateImage(mockChat)).rejects.toThrow(
-        "Image generation not directly supported by OpenRouter adapter. Check specific model capabilities."
+    it("should throw NotImplementedError with correct message", async () => {
+      // Use AIRequestOptions as required by the updated interface
+      const dummyOptions: AIRequestOptions = { model: 'test', messages: [] };
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(NotImplementedError);
+      // Check the specific error message from the adapter
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
+        "Image generation not directly supported by OpenRouter adapter. Use a specific image generation model/vendor."
       );
     });
   });
 
-  describe("sendMCPChat", () => {
-    it("should throw an error as it is not supported", async () => {
-      // Removed id and userId, added missing required properties
-      const mockChat: Chat = {
-        model: mockModelConfig.apiName,
-        prompt: "Use a tool",
-        responseHistory: [],
-        visionUrl: null,
-        imageURL: null,
-        maxTokens: null, // Use null as per type def
-        budgetTokens: null,
-      };
-      const mockMCPToolData: any = {}; // Placeholder for MCPTool data
-      await expect(
-        adapter.sendMCPChat(mockChat, mockMCPToolData)
-      ).rejects.toThrow(
-        "MCP tool support via OpenRouter depends on the routed model and is not explicitly implemented here."
-      );
-    });
-  });
+  // Removed sendMCPChat tests as the method was removed
 });

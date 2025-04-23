@@ -9,10 +9,12 @@ import {
   ChatResponse,
   ContentBlock,
   ToolUseBlock,
-  MCPTool,
+  // MCPTool, // MCPTool type might not be needed if sendMCPChat is removed/integrated
   UsageResponse,
-  ImageBlock, // Add ImageBlock for URL-based images
-  ImageDataBlock, // Add ImageDataBlock for base64 images (though Anthropic example uses URL)
+  ImageBlock,
+  ImageDataBlock,
+  NotImplementedError, // Import error type
+  ImageGenerationResponse, // Import response type
 } from "../types";
 import { computeResponseCost } from "../utils";
 // Import necessary types from Anthropic SDK
@@ -276,8 +278,10 @@ export class AnthropicAdapter implements AIVendorAdapter {
     };
   }
 
-  async generateImage(chat: Chat): Promise<string> {
-    throw new Error("Image generation not supported by Anthropic");
+  // Updated signature to match AIVendorAdapter interface
+  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
+    // Throw NotImplementedError as Anthropic doesn't support image generation
+    throw new NotImplementedError("Image generation not supported by Anthropic");
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {

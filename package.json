@@ -1,6 +1,6 @@
 {
   "name": "snowgander",
-  "version": "0.0.19",
+  "version": "0.0.20",
   "description": "Universal interface for disperate AI vendors",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -43,7 +43,7 @@
     "@google/generative-ai": "^0.24.0",
     "axios": "^1.8.4",
     "file-type": "^20.4.1",
-    "openai": "^4.91.1"
+    "openai": "^4.96.0"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

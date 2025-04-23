@@ -10,6 +10,7 @@ import {
   Chat,
   ImageBlock,
   ChatResponse,
+  NotImplementedError, // Added missing import
 } from "../../types";
 import {
   GoogleGenerativeAI, // Import the original class
@@ -34,10 +35,8 @@ const mockGoogleAIConstructor = jest.fn().mockImplementation(() => ({
 }));
 
 // --- Mock the SDK using jest.doMock (not hoisted) ---
-// This needs to be done BEFORE the module that uses it ('../google') is imported.
 jest.doMock("@google/generative-ai", () => ({
   GoogleGenerativeAI: mockGoogleAIConstructor,
-  // Keep mocked enums
   HarmCategory: {
     HARM_CATEGORY_HARASSMENT: "HARM_CATEGORY_HARASSMENT",
     HARM_CATEGORY_HATE_SPEECH: "HARM_CATEGORY_HATE_SPEECH",
@@ -50,13 +49,11 @@ jest.doMock("@google/generative-ai", () => ({
 }));
 
 // --- Get Typed Mock Constructor AFTER jest.doMock ---
-// We still need the original type for casting, even though the implementation is mocked.
 const MockedGoogleGenerativeAI = GoogleGenerativeAI as jest.MockedClass<
   typeof GoogleGenerativeAI
 >;
 
 describe("GoogleAIAdapter", () => {
-  // Import the adapter *inside* describe AFTER mocks are set up
   let GoogleAIAdapter: typeof import("../google").GoogleAIAdapter;
   let adapter: import("../google").GoogleAIAdapter;
 
@@ -79,20 +76,17 @@ describe("GoogleAIAdapter", () => {
   };
 
   beforeAll(async () => {
-    // Dynamically import the adapter class after mocks are configured
     const module = await import("../google");
     GoogleAIAdapter = module.GoogleAIAdapter;
   });
 
   beforeEach(() => {
-    // Clear all mocks before each test
     mockGoogleAIConstructor.mockClear();
     mockGetGenerativeModel.mockClear();
     mockGenerateContent.mockClear();
     mockStartChat.mockClear();
     mockSendMessage.mockClear();
 
-    // Reset the mock return value for getGenerativeModel
     mockGetGenerativeModel.mockReturnValue({
       generateContent: mockGenerateContent,
       startChat: mockStartChat,
@@ -102,11 +96,7 @@ describe("GoogleAIAdapter", () => {
   });
 
   it("should initialize GoogleAI client with correct config", () => {
-    // The checks in beforeEach cover the initialization logic sufficiently.
-    // This test remains mostly for structure and clarity.
-    // Check that the main SDK constructor was called.
     expect(mockGoogleAIConstructor).toHaveBeenCalledTimes(1);
-    // getGenerativeModel is called later, not during construction.
   });
 
   it("should reflect capabilities from ModelConfig", () => {
@@ -141,13 +131,9 @@ describe("GoogleAIAdapter", () => {
       await adapter.generateResponse(basicOptions);
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
-      // Corrected expectation: Adapter maps to the 'contents' structure
       expect(mockGenerateContent).toHaveBeenCalledWith({
         contents: [{ role: "user", parts: [{ text: "Hello Gemini!" }] }],
       });
-
-      // Verify the model name was passed correctly during initialization (checked implicitly by adapter creation)
-      // We don't check safety settings here as the adapter doesn't explicitly set them by default.
     });
 
     it("should map Google response to AIResponse format", async () => {
@@ -203,7 +189,6 @@ describe("GoogleAIAdapter", () => {
 
       await adapter.generateResponse(optionsWithImage);
 
-      // Corrected expectation: Adapter maps to the 'contents' structure
       expect(mockGenerateContent).toHaveBeenCalledWith({
         contents: [
           {
@@ -247,16 +232,14 @@ describe("GoogleAIAdapter", () => {
 
       await adapter.generateResponse(optionsWithImage);
 
-      // Corrected expectation: Adapter maps to the 'contents' structure, filtering the image block
       expect(mockGenerateContent).toHaveBeenCalledWith({
         contents: [
           {
             role: "user",
-            parts: [{ text: "What about this GIF?" }], // Image block is skipped
+            parts: [{ text: "What about this GIF?" }],
           },
         ],
       });
-      // Update expected string to match the actual warning from google.ts
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining(
           "Google adapter received 'image' block (URL), needs pre-processing to base64 inlineData."
@@ -264,40 +247,25 @@ describe("GoogleAIAdapter", () => {
       );
       consoleWarnSpy.mockRestore();
     });
-
-    // Add tests for history handling (needs startChat mock)
-    // Add tests for API errors
   });
 
   // --- sendChat Tests ---
   describe("sendChat", () => {
-    // Add tests using startChat and sendMessage mocks
-    // Verify history mapping
-    // Verify cost calculation (if implemented)
+    // Placeholder for future tests
   });
 
   // --- generateImage Tests ---
   describe("generateImage", () => {
-    it("should throw NotImplementedError", async () => {
-      const dummyChat: Partial<Chat> = { prompt: "test" };
-      // Corrected expected error message
-      await expect(adapter.generateImage(dummyChat as Chat)).rejects.toThrow(
-        "Error generating image."
+    it("should throw NotImplementedError with correct message", async () => {
+      // Use AIRequestOptions as required by the updated interface
+      const dummyOptions: AIRequestOptions = { model: 'test', messages: [] };
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(NotImplementedError);
+      // Check the specific error message from the adapter
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
+        "Google generates images inline with text, use generateResponse/sendChat."
       );
     });
   });
 
-  // --- sendMCPChat Tests ---
-  describe("sendMCPChat", () => {
-    it("should throw NotImplementedError", async () => {
-      const dummyChat: Partial<Chat> = { prompt: "test" };
-      const dummyTool: any = { id: 1, name: "dummy", path: "" };
-      // Corrected expected error message
-      await expect(
-        adapter.sendMCPChat(dummyChat as Chat, dummyTool)
-      ).rejects.toThrow(
-        "MCP tool support (via function calling) not yet implemented for GoogleAIAdapter."
-      );
-    });
-  });
+  // Removed sendMCPChat tests as the method was removed
 });

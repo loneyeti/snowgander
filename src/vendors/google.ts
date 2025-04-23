@@ -17,7 +17,9 @@ import {
   MCPTool,
   ImageDataBlock, // Specific type for checking/casting
   Message,
-  UsageResponse, // Ensure Message is imported
+  UsageResponse,
+  NotImplementedError, // Import error type
+  ImageGenerationResponse, // Import response type
 } from "../types";
 import { computeResponseCost } from "../utils";
 import axios from "axios"; // Import axios
@@ -263,9 +265,10 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
   }
 
-  async generateImage(chat: Chat): Promise<string> {
-    console.error("Google image generation is inline/multimodal");
-    throw new Error("Error generating image.");
+  // Updated signature to match AIVendorAdapter interface
+  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
+    // Throw NotImplementedError as Google generates images inline, not via a separate call
+    throw new NotImplementedError("Google generates images inline with text, use generateResponse/sendChat.");
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
@@ -300,12 +303,6 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
   }
 
-  async sendMCPChat(chat: Chat, mcpToolData: MCPTool): Promise<ChatResponse> {
-    console.warn(
-      "GoogleAIAdapter.sendMCPChat called, but function calling logic is not implemented."
-    );
-    throw new Error(
-      "MCP tool support (via function calling) not yet implemented for GoogleAIAdapter."
-    );
-  }
+  // Removed sendMCPChat method as it's optional in the interface and not implemented.
+  // Function calling would need to be integrated into generateResponse/sendChat.
 }

@@ -257,23 +257,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
     };
   }
 
-  async generateImage(chat: Chat): Promise<string> {
-    if (!this.isImageGenerationCapable) {
-      throw new Error("This model is not capable of image generation.");
-    }
-    const response = await this.client.images.generate({
-      model: "dall-e-3",
-      prompt: chat.prompt,
-      n: 1,
-      size: "1024x1024",
-      quality: "standard",
-    });
-
-    if (!response.data?.[0]?.url) {
-      throw new Error("No image URL received from OpenAI");
-    }
-    return response.data[0].url;
-  }
+  // Removed generateImage method. Image generation should be handled by OpenAIImageAdapter.
+  // async generateImage(chat: Chat): Promise<string> { ... }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
     // Ensure history message content is always ContentBlock[]
@@ -340,9 +325,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
     };
   }
 
-  async sendMCPChat(chat: Chat, mcpToolData: MCPTool): Promise<ChatResponse> {
-    throw new Error(
-      "MCP tools require specific formatting not yet implemented for OpenAI adapter using client.responses.create."
-    );
-  }
+  // Removed sendMCPChat method as it's optional in the interface and not implemented
+  // for this specific API endpoint (client.responses.create).
+  // Tool handling would need to be integrated into generateResponse/sendChat
+  // if using the chat completions endpoint in the future.
 }

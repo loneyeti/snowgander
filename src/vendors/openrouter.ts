@@ -14,6 +14,8 @@ import {
   ImageBlock, // Add ImageBlock for URL-based images
   ImageDataBlock, // Add ImageDataBlock for base64 images
   TextBlock, // Explicitly import TextBlock if needed for type guards
+  NotImplementedError, // Import error type
+  ImageGenerationResponse, // Import response type
 } from "../types";
 import { computeResponseCost } from "../utils";
 // Removed Prisma Model import
@@ -261,10 +263,11 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     };
   }
 
-  async generateImage(chat: Chat): Promise<string> {
-    // OpenRouter primarily routes to LLMs, image generation might depend on the specific routed model.
-    throw new Error(
-      "Image generation not directly supported by OpenRouter adapter. Check specific model capabilities."
+  // Updated signature to match AIVendorAdapter interface
+  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
+    // Throw NotImplementedError as OpenRouter routes requests and doesn't generate images directly
+    throw new NotImplementedError(
+      "Image generation not directly supported by OpenRouter adapter. Use a specific image generation model/vendor."
     );
   }
 
@@ -307,10 +310,6 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     };
   }
 
-  async sendMCPChat(chat: Chat, mcpToolData: MCPTool): Promise<ChatResponse> {
-    // Tool/Function calling support depends on the underlying model OpenRouter routes to.
-    throw new Error(
-      "MCP tool support via OpenRouter depends on the routed model and is not explicitly implemented here."
-    );
-  }
+  // Removed sendMCPChat method as it's optional in the interface and not implemented.
+  // Tool/Function calling support depends on the underlying model OpenRouter routes to.
 }

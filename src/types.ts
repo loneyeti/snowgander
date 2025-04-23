@@ -9,6 +9,14 @@ export interface ModelConfig {
   // Add any other fields from the original Model used by adapters if needed
 }
 
+// --- Custom Error Type ---
+export class NotImplementedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NotImplementedError';
+  }
+}
+
 // --- Types moved from app/_lib/model.ts ---
 
 // Interface for Anthropic thinking blocks
@@ -134,17 +142,66 @@ export interface AIRequestOptions {
   prompt?: string; // The primary user prompt (often redundant if included in messages)
   // Add other vendor-specific options if necessary (e.g., tools for Anthropic/Google)
   tools?: any[]; // Formatted tools for API call (e.g., Anthropic)
+  // Optional: Specific options for OpenAI Image Generation API
+  openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
+  // Optional: Specific options for OpenAI Image Editing API
+  openaiImageEditOptions?: OpenAIImageEditOptions;
 }
+
+// --- OpenAI Image API Specific Options ---
+// To be nested within AIRequestOptions
+
+export interface OpenAIImageGenerationOptions {
+  // prompt is usually taken from AIRequestOptions.prompt or messages
+  n?: number; // Number of images to generate
+  quality?: 'standard' | 'hd' | 'low' | 'medium' | 'high' | 'auto'; // Quality setting
+  response_format?: 'url' | 'b64_json'; // Default: b64_json expected by adapter
+  size?: '256x256' | '512x512' | '1024x1024' | '1792x1024' | '1024x1792' | '1536x1024' | '1024x1536';
+  style?: 'vivid' | 'natural'; // DALL-E 3 specific
+  user?: string; // User identifier
+  background?: 'transparent' | 'opaque'; // GPT Image specific
+  output_compression?: number; // GPT Image specific (0-100 for jpeg/webp)
+}
+
+export interface OpenAIImageEditOptions {
+  // prompt is usually taken from AIRequestOptions.prompt or messages
+  image: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64
+  mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64
+  n?: number; // Number of images to generate
+  response_format?: 'url' | 'b64_json'; // Default: b64_json expected by adapter
+  size?: '256x256' | '512x512' | '1024x1024' | '1792x1024' | '1024x1792' | '1536x1024' | '1024x1536';
+  user?: string; // User identifier
+}
+
+// --- Image Generation/Editing Response Types ---
+
+export interface ImageGenerationResponse {
+  // Array of generated images, represented as ImageDataBlocks
+  images: ImageDataBlock[];
+  // Standard usage stats
+  usage: UsageResponse;
+}
+
+export interface ImageEditResponse {
+  // Array of edited images, represented as ImageDataBlocks
+  images: ImageDataBlock[];
+  // Standard usage stats
+  usage: UsageResponse;
+}
+
 
 // Interface defining the contract for all AI vendor adapters
 export interface AIVendorAdapter {
   // Generates a response based on the provided options
   generateResponse(options: AIRequestOptions): Promise<AIResponse>;
-  // Generates an image based on the chat context (usually the prompt)
-  // Returns a data URI string (data:mime/type;base64,...) or potentially a URL if uploaded by adapter
-  generateImage(chat: Chat): Promise<string>;
   // Simplified method to send a full chat context (history, prompt, config)
   sendChat(chat: Chat): Promise<ChatResponse>;
+  // Optional method for MCP-specific chat interactions (if needed)
+  sendMCPChat?(chat: Chat, tools: MCPAvailableTool[], options?: AIRequestOptions): Promise<ChatResponse>;
+  // Optional method for image generation
+  generateImage?(options: AIRequestOptions): Promise<ImageGenerationResponse>;
+  // Optional method for image editing
+  editImage?(options: AIRequestOptions): Promise<ImageEditResponse>;
 
   // Capability flags
   isVisionCapable?: boolean;

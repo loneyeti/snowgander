@@ -589,8 +589,12 @@ describe("AnthropicAdapter", () => {
   // --- generateImage Tests ---
   describe("generateImage", () => {
     it("should throw NotImplementedError", async () => {
-      const dummyChat: Partial<Chat> = { prompt: "test" };
-      await expect(adapter.generateImage(dummyChat as Chat)).rejects.toThrow(
+      // Provide minimal AIRequestOptions to satisfy the type checker
+      const dummyOptions: AIRequestOptions = {
+        model: 'claude-3-opus-20240229', // Use a valid model name
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'generate image' }] }],
+      };
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
         "Image generation not supported by Anthropic" // Match exact error message
       );
     });
