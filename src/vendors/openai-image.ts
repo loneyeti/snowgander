@@ -68,6 +68,9 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       });
     }
 
+    console.log(JSON.stringify(chat));
+    console.log(JSON.stringify(messages));
+
     const baseOptions: Partial<AIRequestOptions> = {
       model: model || this.modelConfig.apiName,
       messages: messages,
@@ -76,6 +79,8 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       // Note: maxTokens, temperature etc. from Chat are not directly applicable here
       // but could be added if needed for future API versions or cost estimation.
     };
+
+    console.log(JSON.stringify(baseOptions));
 
     if (openaiImageGenerationOptions && this.generateImage) {
       const options: AIRequestOptions = {
@@ -102,6 +107,9 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         usage: result.usage,
       };
     } else {
+      console.error(
+        "adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat."
+      );
       throw new Error(
         `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat.`
       );
@@ -128,6 +136,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       model: modelNameFromOptions,
     } = options;
     const model = modelNameFromOptions || this.modelConfig.apiName;
+    console.log(`Starting generateImage with ${model}`);
 
     // Extract prompt
     let prompt = textPrompt;
@@ -142,11 +151,17 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       }
     }
 
+    console.log(`generateImage prompt: ${prompt}`);
+
     if (!prompt) {
+      console.error("A text prompt is required for image generation.");
       throw new Error("A text prompt is required for image generation.");
     }
 
     if (!openaiImageGenerationOptions) {
+      console.error(
+        "openaiImageGenerationOptions are required for OpenAI image generation."
+      );
       throw new Error(
         "openaiImageGenerationOptions are required for OpenAI image generation."
       );
@@ -169,6 +184,12 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         // output_compression: openaiImageGenerationOptions.output_compression, // GPT Image specific
       };
 
+      console.log(
+        `Snowgander: generateImage: apiOptions (pre-cleanup): ${JSON.stringify(
+          apiOptions
+        )}`
+      );
+
       // Remove undefined keys
       Object.keys(apiOptions).forEach(
         (key) =>
@@ -176,7 +197,17 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
           delete apiOptions[key as keyof typeof apiOptions]
       );
 
+      console.log(
+        `Snowgander: generateImage: apiOptions (post-cleanup): ${JSON.stringify(
+          apiOptions
+        )}`
+      );
+
       const result = await this.client.images.generate(apiOptions);
+
+      console.log(
+        `snowgander: generateImage: Result: ${JSON.stringify(result)}`
+      );
 
       const images: ImageDataBlock[] = result.data
         ? result.data
