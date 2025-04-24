@@ -70,7 +70,8 @@ export type ContentBlock =
   | ImageBlock // Represents URL-based images
   | ImageDataBlock // Represents raw image data
   | ToolUseBlock
-  | ToolResultBlock;
+  | ToolResultBlock
+  | ErrorBlock; // Added ErrorBlock
 
 export interface MCPAvailableTool {
   name: string;
@@ -129,6 +130,13 @@ export interface AIResponse {
   content: ContentBlock[]; // The generated content
   // Optionally include usage stats if adapters provide them
   usage?: UsageResponse;
+}
+
+// --- Error Block Type ---
+export interface ErrorBlock {
+  type: "error";
+  publicMessage: string; // Safe to show to the end-user
+  privateMessage: string; // Detailed error for logging/debugging
 }
 
 // Options for making a request to an AI vendor adapter
@@ -219,9 +227,13 @@ export interface AIVendorAdapter {
     options?: AIRequestOptions
   ): Promise<ChatResponse>;
   // Optional method for image generation
-  generateImage?(options: AIRequestOptions): Promise<ImageGenerationResponse>;
+  generateImage?(
+    options: AIRequestOptions
+  ): Promise<AIResponse | ImageGenerationResponse>; // Allow AIResponse for errors
   // Optional method for image editing
-  editImage?(options: AIRequestOptions): Promise<ImageEditResponse>;
+  editImage?(
+    options: AIRequestOptions
+  ): Promise<AIResponse | ImageEditResponse>; // Allow AIResponse for errors
 
   // Capability flags
   isVisionCapable?: boolean;

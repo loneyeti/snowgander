@@ -16,9 +16,29 @@ import {
   UsageResponse,
   VendorConfig,
   NotImplementedError,
-  OpenAIImageEditOptions, // Needed for editImage
+  ErrorBlock,
+  OpenAIImageEditOptions,
 } from "../types";
-// Removed computeResponseCost import as it's not used correctly here yet
+
+// Helper function to create error responses
+const createErrorResponse = (
+  publicMsg: string,
+  privateMsg: string,
+  role: "assistant" | "error" = "error" // Default role to 'error' for clarity
+): AIResponse | ChatResponse => {
+  const errorBlock: ErrorBlock = {
+    type: "error",
+    publicMessage: publicMsg,
+    privateMessage: privateMsg,
+  };
+  // Determine return type based on expected context (AIResponse vs ChatResponse)
+  // For simplicity here, we'll return a structure compatible with both where possible
+  return {
+    role: role,
+    content: [errorBlock],
+    usage: { inputCost: 0, outputCost: 0, totalCost: 0 }, // Ensure usage is present
+  };
+};
 
 export class OpenAIImageAdapter implements AIVendorAdapter {
   private client: OpenAI;
@@ -41,9 +61,12 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    throw new NotImplementedError(
-      `${this.vendor} adapter does not support generateResponse. Use generateImage or editImage.`
-    );
+    const errMsg = `${this.vendor} adapter does not support generateResponse. Use generateImage or editImage.`;
+    console.error("generateResponse called:", errMsg);
+    return createErrorResponse(
+      "This model cannot generate text responses.",
+      errMsg
+    ) as AIResponse;
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
@@ -55,7 +78,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       responseHistory, // Needed to build messages for AIRequestOptions
       systemPrompt, // Needed for AIRequestOptions
     } = chat;
-
+    console.log(`snowgander chat: ${chat}`);
     // Construct basic messages array from history and current prompt
     const messages: Message[] = responseHistory.map((res) => ({
       role: res.role,
@@ -68,9 +91,6 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       });
     }
 
-    console.log(JSON.stringify(chat));
-    console.log(JSON.stringify(messages));
-
     const baseOptions: Partial<AIRequestOptions> = {
       model: model || this.modelConfig.apiName,
       messages: messages,
@@ -80,39 +100,51 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       // but could be added if needed for future API versions or cost estimation.
     };
 
-    console.log(JSON.stringify(baseOptions));
+    try {
+      if (openaiImageGenerationOptions) {
+        const options: AIRequestOptions = {
+          ...baseOptions,
+          openaiImageGenerationOptions: openaiImageGenerationOptions,
+        } as AIRequestOptions;
 
-    if (openaiImageGenerationOptions && this.generateImage) {
-      const options: AIRequestOptions = {
-        ...baseOptions,
-        openaiImageGenerationOptions: openaiImageGenerationOptions,
-      } as AIRequestOptions; // Type assertion needed as baseOptions is partial
+        // generateImage now returns AIResponse, potentially with ErrorBlock
+        const result = await this.generateImage(options);
+        // Map AIResponse to ChatResponse structure
+        return {
+          role: result.role,
+          content: result.content,
+          usage: result.usage,
+        };
+      } else if (openaiImageEditOptions && this.editImage) {
+        const options: AIRequestOptions = {
+          ...baseOptions,
+          openaiImageEditOptions: openaiImageEditOptions,
+        } as AIRequestOptions;
 
-      const result = await this.generateImage(options);
-      return {
-        role: "assistant",
-        content: result.images, // Map images to content blocks
-        usage: result.usage,
-      };
-    } else if (openaiImageEditOptions && this.editImage) {
-      const options: AIRequestOptions = {
-        ...baseOptions,
-        openaiImageEditOptions: openaiImageEditOptions,
-      } as AIRequestOptions; // Type assertion needed as baseOptions is partial
-
-      const result = await this.editImage(options);
-      return {
-        role: "assistant",
-        content: result.images, // Map images to content blocks
-        usage: result.usage,
-      };
-    } else {
-      console.error(
-        "adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat."
-      );
-      throw new Error(
-        `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat.`
-      );
+        // editImage now returns AIResponse, potentially with ErrorBlock
+        const result = await this.editImage(options);
+        // Map AIResponse (containing images or error) to ChatResponse structure
+        return {
+          role: result.role, // Will be 'error' if editImage returned an ErrorBlock
+          content: result.content, // Will be ErrorBlock[] or ImageDataBlock[]
+          usage: result.usage,
+        };
+      } else {
+        const errMsg = `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat.`;
+        console.error("sendChat error:", errMsg);
+        return createErrorResponse(
+          "Image generation/editing options missing.",
+          errMsg
+        ) as ChatResponse;
+      }
+    } catch (error: any) {
+      // Catch unexpected errors during the process
+      const errMsg = `Unexpected error in sendChat: ${error.message || error}`;
+      console.error(errMsg, error);
+      return createErrorResponse(
+        "An unexpected error occurred.",
+        errMsg
+      ) as ChatResponse;
     }
   }
 
@@ -121,14 +153,17 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     tools: MCPAvailableTool[],
     options?: AIRequestOptions | undefined
   ): Promise<ChatResponse> {
-    throw new NotImplementedError(
-      `${this.vendor} adapter does not support sendMCPChat.`
-    );
+    const errMsg = `${this.vendor} adapter does not support sendMCPChat.`;
+    console.error("sendMCPChat called:", errMsg);
+    return createErrorResponse(
+      "Tool use is not supported by this model.",
+      errMsg
+    ) as ChatResponse;
   }
 
-  async generateImage(
-    options: AIRequestOptions
-  ): Promise<ImageGenerationResponse> {
+  // generateImage now returns AIResponse instead of ImageGenerationResponse
+  // to accommodate potential ErrorBlocks
+  async generateImage(options: AIRequestOptions): Promise<AIResponse> {
     const {
       prompt: textPrompt,
       messages,
@@ -154,17 +189,16 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     console.log(`generateImage prompt: ${prompt}`);
 
     if (!prompt) {
-      console.error("A text prompt is required for image generation.");
-      throw new Error("A text prompt is required for image generation.");
+      const errMsg = "A text prompt is required for image generation.";
+      console.error("generateImage error:", errMsg);
+      return createErrorResponse("Prompt missing.", errMsg);
     }
 
     if (!openaiImageGenerationOptions) {
-      console.error(
-        "openaiImageGenerationOptions are required for OpenAI image generation."
-      );
-      throw new Error(
-        "openaiImageGenerationOptions are required for OpenAI image generation."
-      );
+      const errMsg =
+        "openaiImageGenerationOptions are required for OpenAI image generation.";
+      console.error("generateImage error:", errMsg);
+      return createErrorResponse("Image options missing.", errMsg);
     }
 
     try {
@@ -184,12 +218,6 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         // output_compression: openaiImageGenerationOptions.output_compression, // GPT Image specific
       };
 
-      console.log(
-        `Snowgander: generateImage: apiOptions (pre-cleanup): ${JSON.stringify(
-          apiOptions
-        )}`
-      );
-
       // Remove undefined keys
       Object.keys(apiOptions).forEach(
         (key) =>
@@ -198,9 +226,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       );
 
       console.log(
-        `Snowgander: generateImage: apiOptions (post-cleanup): ${JSON.stringify(
-          apiOptions
-        )}`
+        `Snowgander: generateImage: apiOptions: ${JSON.stringify(apiOptions)}`
       );
 
       const result = await this.client.images.generate(apiOptions);
@@ -214,10 +240,17 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
             .filter((item) => item.b64_json)
             .map((item) => ({
               type: "image_data",
-              mimeType: "image/png",
+              mimeType: "image/png", // Assuming PNG, might need adjustment
               base64Data: item.b64_json!,
             }))
         : [];
+
+      if (images.length === 0) {
+        // Handle cases where API returns success but no images
+        const errMsg = "OpenAI API returned success but no image data.";
+        console.error("generateImage error:", errMsg);
+        return createErrorResponse("Failed to retrieve image data.", errMsg);
+      }
 
       const usage = this.calculateImageCost(
         openaiImageGenerationOptions.size,
@@ -226,16 +259,20 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       );
 
       return {
-        images: images,
+        role: "assistant",
+        content: images,
         usage: usage,
       };
     } catch (error: any) {
+      const errMsg = `Failed to generate image: ${error.message || error}`;
       console.error(`${this.vendor} generateImage error:`, error);
-      throw new Error(`Failed to generate image: ${error.message || error}`);
+      return createErrorResponse("Image generation failed.", errMsg);
     }
   }
 
-  async editImage(options: AIRequestOptions): Promise<ImageEditResponse> {
+  // Note: editImage still needs implementation for image handling.
+  // We'll make it return ErrorBlocks for missing options and the NotImplementedError.
+  async editImage(options: AIRequestOptions): Promise<AIResponse> {
     const {
       prompt: textPrompt,
       messages,
@@ -244,25 +281,54 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     } = options;
 
     if (!openaiImageEditOptions) {
-      throw new Error(
-        "openaiImageEditOptions are required for OpenAI image editing."
-      );
+      const errMsg =
+        "openaiImageEditOptions are required for OpenAI image editing.";
+      console.error("editImage error:", errMsg);
+      return createErrorResponse("Image editing options missing.", errMsg);
     }
 
-    // TODO: Implement image fetching/conversion for ImageBlock/ImageDataBlock inputs
-    // This requires handling URLs (fetching) and base64 data.
-    // The OpenAI SDK expects file streams or Buffers.
-    // Example placeholder:
-    // const imageInput = await this.prepareImageInput(openaiImageEditOptions.image[0]); // Needs implementation
-    // const maskInput = openaiImageEditOptions.mask ? await this.prepareImageInput(openaiImageEditOptions.mask) : undefined;
+    // Placeholder check for prompt (similar to generateImage)
+    let prompt = textPrompt;
+    if (!prompt && messages && messages.length > 0) {
+      // ... logic to extract prompt from messages ...
+    }
+    if (!prompt) {
+      const errMsg = "A text prompt is required for image editing.";
+      console.error("editImage error:", errMsg);
+      return createErrorResponse("Prompt missing for editing.", errMsg);
+    }
 
-    console.log("editImage called with options:", options); // Placeholder
-    throw new NotImplementedError(
-      `${this.vendor} adapter editImage not fully implemented yet (image input handling needed).`
+    if (
+      !openaiImageEditOptions.image ||
+      openaiImageEditOptions.image.length === 0
+    ) {
+      const errMsg = "An input image is required for editing.";
+      console.error("editImage error:", errMsg);
+      return createErrorResponse("Input image missing for editing.", errMsg);
+    }
+
+    // Still not implemented part
+    const errMsgNotImplemented = `${this.vendor} adapter editImage not fully implemented yet (image input handling needed).`;
+    console.error("editImage error:", errMsgNotImplemented);
+    return createErrorResponse(
+      "Image editing is not fully supported yet.",
+      errMsgNotImplemented
     );
 
-    // --- Basic structure (needs image input handling) ---
+    // --- Keep structure for future implementation ---
     /*
+    try {
+        // ... (API call logic) ...
+
+        // ... (Process result) ...
+
+        // return { role: 'assistant', content: images, usage: usage };
+
+    } catch (error: any) {
+        const errMsg = `Failed to edit image: ${error.message || error}`;
+        console.error(`${this.vendor} editImage error:`, error);
+        return createErrorResponse("Image editing failed.", errMsg);
+    }
     const model = modelNameFromOptions || this.modelConfig.apiName;
 
     let prompt = textPrompt;
