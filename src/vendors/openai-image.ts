@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI from "openai";
 import {
   AIVendorAdapter,
   AIRequestOptions,
@@ -9,19 +9,20 @@ import {
   ImageGenerationResponse,
   ImageEditResponse,
   ImageDataBlock,
-  ImageBlock, // Needed for editImage input handling
+  ImageBlock,
   MCPAvailableTool,
+  Message, // Added for constructing AIRequestOptions in sendChat
   ModelConfig,
   UsageResponse,
   VendorConfig,
   NotImplementedError,
   OpenAIImageEditOptions, // Needed for editImage
-} from '../types';
+} from "../types";
 // Removed computeResponseCost import as it's not used correctly here yet
 
 export class OpenAIImageAdapter implements AIVendorAdapter {
   private client: OpenAI;
-  readonly vendor = 'openai-image';
+  readonly vendor = "openai-image";
   private modelConfig: ModelConfig;
   readonly isVisionCapable: boolean = false;
   readonly isImageGenerationCapable: boolean = true;
@@ -46,9 +47,65 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
-    throw new NotImplementedError(
-      `${this.vendor} adapter does not support sendChat. Use generateImage or editImage.`
-    );
+    const {
+      prompt,
+      model,
+      openaiImageGenerationOptions,
+      openaiImageEditOptions,
+      responseHistory, // Needed to build messages for AIRequestOptions
+      systemPrompt, // Needed for AIRequestOptions
+    } = chat;
+
+    // Construct basic messages array from history and current prompt
+    const messages: Message[] = responseHistory.map((res) => ({
+      role: res.role,
+      content: res.content,
+    }));
+    if (prompt) {
+      messages.push({
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+      });
+    }
+
+    const baseOptions: Partial<AIRequestOptions> = {
+      model: model || this.modelConfig.apiName,
+      messages: messages,
+      prompt: prompt, // Pass prompt along
+      systemPrompt: systemPrompt, // Pass system prompt
+      // Note: maxTokens, temperature etc. from Chat are not directly applicable here
+      // but could be added if needed for future API versions or cost estimation.
+    };
+
+    if (openaiImageGenerationOptions && this.generateImage) {
+      const options: AIRequestOptions = {
+        ...baseOptions,
+        openaiImageGenerationOptions: openaiImageGenerationOptions,
+      } as AIRequestOptions; // Type assertion needed as baseOptions is partial
+
+      const result = await this.generateImage(options);
+      return {
+        role: "assistant",
+        content: result.images, // Map images to content blocks
+        usage: result.usage,
+      };
+    } else if (openaiImageEditOptions && this.editImage) {
+      const options: AIRequestOptions = {
+        ...baseOptions,
+        openaiImageEditOptions: openaiImageEditOptions,
+      } as AIRequestOptions; // Type assertion needed as baseOptions is partial
+
+      const result = await this.editImage(options);
+      return {
+        role: "assistant",
+        content: result.images, // Map images to content blocks
+        usage: result.usage,
+      };
+    } else {
+      throw new Error(
+        `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat.`
+      );
+    }
   }
 
   async sendMCPChat(
@@ -75,23 +132,23 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     // Extract prompt
     let prompt = textPrompt;
     if (!prompt && messages && messages.length > 0) {
-      const lastUserMessage = messages.filter((m) => m.role === 'user').pop();
+      const lastUserMessage = messages.filter((m) => m.role === "user").pop();
       if (
         lastUserMessage &&
         lastUserMessage.content.length > 0 &&
-        lastUserMessage.content[0].type === 'text'
+        lastUserMessage.content[0].type === "text"
       ) {
         prompt = lastUserMessage.content[0].text;
       }
     }
 
     if (!prompt) {
-      throw new Error('A text prompt is required for image generation.');
+      throw new Error("A text prompt is required for image generation.");
     }
 
     if (!openaiImageGenerationOptions) {
       throw new Error(
-        'openaiImageGenerationOptions are required for OpenAI image generation.'
+        "openaiImageGenerationOptions are required for OpenAI image generation."
       );
     }
 
@@ -101,10 +158,10 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         prompt: prompt,
         n: openaiImageGenerationOptions.n,
         quality:
-          openaiImageGenerationOptions.quality === 'auto'
+          openaiImageGenerationOptions.quality === "auto"
             ? undefined
             : openaiImageGenerationOptions.quality,
-        response_format: 'b64_json', // Force b64_json for consistent handling
+        response_format: "b64_json", // Force b64_json for consistent handling
         size: openaiImageGenerationOptions.size,
         style: openaiImageGenerationOptions.style,
         user: openaiImageGenerationOptions.user,
@@ -125,8 +182,8 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         ? result.data
             .filter((item) => item.b64_json)
             .map((item) => ({
-              type: 'image_data',
-              mimeType: 'image/png',
+              type: "image_data",
+              mimeType: "image/png",
               base64Data: item.b64_json!,
             }))
         : [];
@@ -157,7 +214,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
 
     if (!openaiImageEditOptions) {
       throw new Error(
-        'openaiImageEditOptions are required for OpenAI image editing.'
+        "openaiImageEditOptions are required for OpenAI image editing."
       );
     }
 
@@ -168,7 +225,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     // const imageInput = await this.prepareImageInput(openaiImageEditOptions.image[0]); // Needs implementation
     // const maskInput = openaiImageEditOptions.mask ? await this.prepareImageInput(openaiImageEditOptions.mask) : undefined;
 
-    console.log('editImage called with options:', options); // Placeholder
+    console.log("editImage called with options:", options); // Placeholder
     throw new NotImplementedError(
       `${this.vendor} adapter editImage not fully implemented yet (image input handling needed).`
     );
@@ -236,8 +293,8 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
 
   // Placeholder Helper to calculate cost - Needs proper implementation using utils
   private calculateImageCost(
-    size: OpenAI.Images.ImageGenerateParams['size'],
-    quality: OpenAI.Images.ImageGenerateParams['quality'],
+    size: OpenAI.Images.ImageGenerateParams["size"],
+    quality: OpenAI.Images.ImageGenerateParams["quality"],
     promptTokens: number = 0 // Keep promptTokens for future use
   ): UsageResponse {
     // TODO: Implement actual cost calculation based on size, quality, prompt tokens,
@@ -245,7 +302,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     // This likely requires a new utility function in utils.ts.
 
     console.warn(
-      'Placeholder cost calculation used for OpenAIImageAdapter. Implement proper cost logic.'
+      "Placeholder cost calculation used for OpenAIImageAdapter. Implement proper cost logic."
     );
     // Return zero cost placeholder matching UsageResponse structure
     return {

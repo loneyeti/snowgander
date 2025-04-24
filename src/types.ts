@@ -13,7 +13,7 @@ export interface ModelConfig {
 export class NotImplementedError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = 'NotImplementedError';
+    this.name = "NotImplementedError";
   }
 }
 
@@ -96,6 +96,9 @@ export interface Chat {
   budgetTokens: number | null; // Token budget for thinking mode
   systemPrompt?: string; // The actual system prompt text from the persona
   mcpAvailableTools?: MCPAvailableTool[];
+  // Options specific to OpenAI Image Adapter, passed via Chat
+  openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
+  openaiImageEditOptions?: OpenAIImageEditOptions;
 }
 
 // Represents an MCP Tool configuration
@@ -154,12 +157,19 @@ export interface AIRequestOptions {
 export interface OpenAIImageGenerationOptions {
   // prompt is usually taken from AIRequestOptions.prompt or messages
   n?: number; // Number of images to generate
-  quality?: 'standard' | 'hd' | 'low' | 'medium' | 'high' | 'auto'; // Quality setting
-  response_format?: 'url' | 'b64_json'; // Default: b64_json expected by adapter
-  size?: '256x256' | '512x512' | '1024x1024' | '1792x1024' | '1024x1792' | '1536x1024' | '1024x1536';
-  style?: 'vivid' | 'natural'; // DALL-E 3 specific
+  quality?: "standard" | "hd" | "low" | "medium" | "high" | "auto"; // Quality setting
+  response_format?: "url" | "b64_json"; // Default: b64_json expected by adapter
+  size?:
+    | "256x256"
+    | "512x512"
+    | "1024x1024"
+    | "1792x1024"
+    | "1024x1792"
+    | "1536x1024"
+    | "1024x1536";
+  style?: "vivid" | "natural"; // DALL-E 3 specific
   user?: string; // User identifier
-  background?: 'transparent' | 'opaque'; // GPT Image specific
+  background?: "transparent" | "opaque"; // GPT Image specific
   output_compression?: number; // GPT Image specific (0-100 for jpeg/webp)
 }
 
@@ -168,8 +178,15 @@ export interface OpenAIImageEditOptions {
   image: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64
   mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64
   n?: number; // Number of images to generate
-  response_format?: 'url' | 'b64_json'; // Default: b64_json expected by adapter
-  size?: '256x256' | '512x512' | '1024x1024' | '1792x1024' | '1024x1792' | '1536x1024' | '1024x1536';
+  response_format?: "url" | "b64_json"; // Default: b64_json expected by adapter
+  size?:
+    | "256x256"
+    | "512x512"
+    | "1024x1024"
+    | "1792x1024"
+    | "1024x1792"
+    | "1536x1024"
+    | "1024x1536";
   user?: string; // User identifier
 }
 
@@ -189,7 +206,6 @@ export interface ImageEditResponse {
   usage: UsageResponse;
 }
 
-
 // Interface defining the contract for all AI vendor adapters
 export interface AIVendorAdapter {
   // Generates a response based on the provided options
@@ -197,7 +213,11 @@ export interface AIVendorAdapter {
   // Simplified method to send a full chat context (history, prompt, config)
   sendChat(chat: Chat): Promise<ChatResponse>;
   // Optional method for MCP-specific chat interactions (if needed)
-  sendMCPChat?(chat: Chat, tools: MCPAvailableTool[], options?: AIRequestOptions): Promise<ChatResponse>;
+  sendMCPChat?(
+    chat: Chat,
+    tools: MCPAvailableTool[],
+    options?: AIRequestOptions
+  ): Promise<ChatResponse>;
   // Optional method for image generation
   generateImage?(options: AIRequestOptions): Promise<ImageGenerationResponse>;
   // Optional method for image editing
