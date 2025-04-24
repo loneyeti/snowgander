@@ -21,6 +21,10 @@ export type {
   MCPAvailableTool,
   MCPTool,
   Message,
+  OpenAIImageGenerationOptions,
+  OpenAIImageEditOptions,
+  ImageGenerationResponse,
+  ImageEditResponse,
 } from "./types";
 
 // Optionally export individual adapters if direct use is needed,
