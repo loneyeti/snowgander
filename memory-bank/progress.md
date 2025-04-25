@@ -1,4 +1,4 @@
-# Progress: AI Vendor Abstraction Layer (2025-04-05)
+# Progress: AI Vendor Abstraction Layer (2025-04-25)
 
 ## What Works
 
@@ -23,9 +23,8 @@
 ## What's Left to Build / TODOs
 
 - **Tool Implementation Consistency:**
-  - The Anthropic adapter has integrated tool handling, but we need to verify consistent implementation across OpenAI, Google, and OpenRouter adapters.
-  - OpenAI adapter may still need mapping for tool call outputs (need to verify current state).
-  - OpenRouter adapter may need additional work for tool/function calling parameter handling.
+  - **Priority:** Verify and implement consistent, integrated tool handling (within `sendChat`/`generateResponse`) across **all** adapters (OpenAI, Google, OpenRouter) to match the pattern established in the Anthropic adapter.
+  - This includes correct mapping of `MCPAvailableTool` definitions to vendor formats and parsing `ToolUseBlock`/`ToolResultBlock` from vendor responses.
 - **Enhanced Content Block Mapping:**
   - OpenRouter adapter likely needs improved mapping for complex content blocks (vision, etc.) beyond simple text extraction.
   - Verify Google vision handling works correctly with various image types/URLs and handles potential errors gracefully.
@@ -39,14 +38,14 @@
 ## Current Status
 
 - **Solid Foundation:** The core abstraction layer, comprehensive type system, factory pattern, and adapter implementations are fully in place.
-- **Memory Bank Updated:** Documentation has been updated to reflect the current project state (as of 2025-04-14).
-- **Tool Handling Evolution:** The approach to tool handling appears to have evolved, with at least the Anthropic adapter integrating MCP tool support directly rather than using a separate `sendMCPChat` method.
-- **Unified Thinking/Reasoning:** A consistent pattern using `isThinking`, `budgetTokens`, and `ThinkingBlock` is now used for both Anthropic and OpenRouter.
-- **Ready for Consistency Verification:** The next step is to verify that all adapters handle tools, content blocks, and capabilities with a consistent approach.
+- **Memory Bank Updated:** Documentation has been reviewed and updated to reflect the current project state (as of 2025-04-25). Key inconsistency regarding tool handling documentation resolved.
+- **Tool Handling Evolution:** The pattern of integrating tool handling directly into `sendChat`/`generateResponse` (as seen in Anthropic) is the target. Consistency across other adapters is the next major implementation step.
+- **Unified Thinking/Reasoning:** A consistent pattern using `isThinkingCapable`, `budgetTokens`, and `ThinkingBlock` is established for Anthropic and OpenRouter.
+- **Ready for Implementation:** The library is stable, documented, and ready for work on achieving consistent tool handling and multimodal support across all adapters.
 
 ## Known Issues / Limitations
 
-- **Tool Handling Consistency:** While the Anthropic adapter now integrates tool handling, we need to verify consistent implementation across all adapters.
-- **Inconsistent Multimodal Support:** Handling of image inputs likely still varies across adapters: Google adapter now handles URL fetching/processing, OpenAI handles base64/URLs (via `responses.create`), Anthropic may have limited or no vision support depending on model, and OpenRouter's support may be basic/untested.
+- **Tool Handling Inconsistency:** Currently, only the Anthropic adapter fully integrates tool handling within `sendChat`/`generateResponse`. Other adapters (OpenAI, Google, OpenRouter) require implementation to match this pattern for consistency.
+- **Inconsistent Multimodal Support:** Handling of image inputs varies across adapters: Google adapter handles URL fetching/processing, OpenAI handles base64/URLs (via `responses.create`), Anthropic's support depends on the model, and OpenRouter's support is likely basic. Requires standardization.
 - **Limited Image Generation:** Image generation support may still be limited to the OpenAI adapter.
 - **Potential OpenAI Endpoint Divergence:** Use of `client.responses.create` in `OpenAIAdapter` versus `client.chat.completions.create` in `OpenRouterAdapter` may still be a point of divergence worth examining.

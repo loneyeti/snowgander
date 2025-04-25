@@ -1,44 +1,24 @@
-# Active Context: Memory Bank Update (2025-04-05)
+# Active Context: Memory Bank Review & Update (2025-04-25)
 
 ## Current Focus
 
-- **Task:** Implement OpenRouter reasoning token support.
-- **Action:** Modified `src/vendors/openrouter.ts` and `src/vendors/__tests__/openrouter.test.ts`.
-- **Goal:** Allow users to leverage OpenRouter's reasoning capabilities using the existing `budgetTokens` parameter and `isThinking` flag, maintaining vendor neutrality in the core interfaces.
+- **Task:** Perform a full review and update of the Memory Bank documentation.
+- **Action:** Read all core Memory Bank files (`projectbrief.md`, `productContext.md`, `activeContext.md`, `systemPatterns.md`, `techContext.md`, `progress.md`) and `.clinerules`.
+- **Goal:** Ensure documentation is accurate, consistent, and reflects the latest understanding of the project state.
 
-## Key Observations During Review
+## Key Findings During Review (2025-04-25)
 
-- **Type System:** The `types.ts` file defines a comprehensive type system with:
-
-  - `ContentBlock` union type (including `TextBlock`, `ImageBlock`, `ImageDataBlock`, `ThinkingBlock`, etc.) for standardized message content representation
-  - Clear interfaces for adapters (`AIVendorAdapter`), configurations (`VendorConfig`, `ModelConfig`), and messaging (`Message`, `Chat`, `ChatResponse`)
-  - Robust definition of tool-related types (`ToolUseBlock`, `ToolResultBlock`, `MCPAvailableTool`)
-  - Explicit capability flags in the `AIVendorAdapter` interface
-
-- **Factory Implementation:** The `factory.ts` file implements a clean factory pattern:
-
-  - Maintains a static `vendorConfigs` Map to store configurations
-  - Uses the `getAdapter(vendorName, modelConfig)` method to instantiate vendor-specific adapters
-  - Ensures proper configuration injection into adapters via constructor parameters
-  - Supports multiple vendors (OpenAI, Anthropic, Google, OpenRouter)
-
-- **Adapter Evolution:**
-
-  - **Anthropic:** Integrates tool handling directly in `sendChat`/`generateResponse`. Uses `thinkingMode` and `budgetTokens` for its specific thinking implementation.
-  - **OpenRouter:** Now supports reasoning tokens. It uses the `isThinking` capability flag and the `budgetTokens` parameter (passed as `reasoning: { max_tokens: ... }` to the API). Reasoning output is parsed into a `ThinkingBlock`. This aligns OpenRouter's reasoning with Anthropic's thinking mechanism using shared interface fields (`isThinking`, `budgetTokens`, `ThinkingBlock`).
-
-  - Tools are handled directly in `sendChat` and `generateResponse` methods
-  - Detailed mapping of content blocks between our system format and vendor API formats continues to be refined.
-
-- **Index Exports:** The `index.ts` file cleanly exports:
-  - The factory as the primary interface for consuming applications
-  - All necessary types consumers might need
-  - An option (commented out) to export individual adapters if needed
+- **Core Documentation:** `projectbrief.md`, `productContext.md`, and `techContext.md` appear accurate and up-to-date with the project's goals and technical foundation.
+- **MCP Tool Handling Inconsistency:**
+  - `systemPatterns.md` (under Design Considerations) incorrectly stated that adapters throw errors for `sendMCPChat` and place responsibility solely on the consuming application.
+  - `activeContext.md` (previous version), `progress.md`, and `.clinerules` correctly noted that the Anthropic adapter has evolved to integrate tool handling directly within `sendChat`/`generateResponse`.
+  - **Resolution:** `systemPatterns.md` needs updating to reflect this evolution. `progress.md` needs emphasis on ensuring _consistency_ of this pattern across _all_ adapters.
+- **Unified Thinking/Reasoning:** The pattern using `isThinkingCapable`, `budgetTokens`, and `ThinkingBlock` for both Anthropic thinking and OpenRouter reasoning is consistently documented across relevant files (`systemPatterns.md`, `progress.md`, `.clinerules`).
+- **Other Areas (Multimodal, OpenAI Endpoint):** Known areas needing attention (inconsistent multimodal support, OpenAI endpoint divergence) are accurately captured in `progress.md` and `systemPatterns.md`.
+- **`.clinerules`:** The existing rules accurately capture the main patterns observed. No immediate additions were identified during this review.
 
 ## Next Steps
 
-1.  Update `progress.md` to reflect the addition of OpenRouter reasoning support and the unified approach using `isThinking`/`budgetTokens`.
-2.  Update `systemPatterns.md` to clarify the unified handling of thinking/reasoning.
-3.  Update `.clinerules` with the pattern of using `isThinking`/`budgetTokens` for both Anthropic and OpenRouter.
-4.  Run tests (`npm test`) to confirm changes.
-5.  Attempt completion.
+1.  Update `systemPatterns.md` to correct the description of MCP tool handling.
+2.  Update `progress.md` to refine the TODOs and Known Issues regarding tool handling consistency across all adapters and update the date.
+3.  Confirm completion of the Memory Bank update.

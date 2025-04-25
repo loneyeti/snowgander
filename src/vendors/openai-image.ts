@@ -1,4 +1,6 @@
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai"; // Import toFile
+import fetch from "node-fetch"; // Need fetch for handling URL images
+import { Buffer } from "buffer"; // Need Buffer for base64 decoding
 import {
   AIVendorAdapter,
   AIRequestOptions,
@@ -17,8 +19,8 @@ import {
   VendorConfig,
   NotImplementedError,
   ErrorBlock,
-  OpenAIImageEditOptions,
 } from "../types";
+// Removed OpenAIImageEditOptions from import as it's defined in types.ts
 
 // Helper function to create error responses
 const createErrorResponse = (
@@ -130,7 +132,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
           usage: result.usage,
         };
       } else {
-        const errMsg = `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat.`;
+        const errMsg = `${this.vendor} adapter requires either openaiImageGenerationOptions or openaiImageEditOptions to be provided in the Chat object via sendChat. Chat: ${chat}`;
         console.error("sendChat error:", errMsg);
         return createErrorResponse(
           "Image generation/editing options missing.",
@@ -202,6 +204,7 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     }
 
     try {
+      // Map adapter options to OpenAI API params
       const apiOptions: OpenAI.Images.ImageGenerateParams = {
         model: model,
         prompt: prompt,
@@ -210,19 +213,26 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
           openaiImageGenerationOptions.quality === "auto"
             ? undefined
             : openaiImageGenerationOptions.quality,
-        response_format: "b64_json", // Force b64_json for consistent handling
-        size: openaiImageGenerationOptions.size,
-        style: openaiImageGenerationOptions.style,
+        //response_format: "b64_json", // Force b64_json
+        size:
+          openaiImageGenerationOptions.size === "auto"
+            ? undefined
+            : openaiImageGenerationOptions.size,
         user: openaiImageGenerationOptions.user,
-        // background: openaiImageGenerationOptions.background, // GPT Image specific
-        // output_compression: openaiImageGenerationOptions.output_compression, // GPT Image specific
+        background:
+          openaiImageGenerationOptions.background === "auto"
+            ? undefined
+            : openaiImageGenerationOptions.background,
+        output_compression: openaiImageGenerationOptions.output_compression,
+        moderation: openaiImageGenerationOptions.moderation, // Pass moderation if provided
+        // style is removed as it's DALL-E 3 specific and caused TS error
       };
 
-      // Remove undefined keys
+      // Remove undefined keys to avoid sending them
       Object.keys(apiOptions).forEach(
         (key) =>
-          apiOptions[key as keyof typeof apiOptions] === undefined &&
-          delete apiOptions[key as keyof typeof apiOptions]
+          (apiOptions as any)[key] === undefined &&
+          delete (apiOptions as any)[key]
       );
 
       console.log(
@@ -252,11 +262,8 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         return createErrorResponse("Failed to retrieve image data.", errMsg);
       }
 
-      const usage = this.calculateImageCost(
-        openaiImageGenerationOptions.size,
-        openaiImageGenerationOptions.quality
-        // TODO: Add prompt token calculation if needed for cost
-      );
+      // Use usage data directly from the API response
+      const usage = this.mapApiUsageToUsageResponse(result.usage);
 
       return {
         role: "assistant",
@@ -307,113 +314,147 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
       return createErrorResponse("Input image missing for editing.", errMsg);
     }
 
-    // Still not implemented part
-    const errMsgNotImplemented = `${this.vendor} adapter editImage not fully implemented yet (image input handling needed).`;
-    console.error("editImage error:", errMsgNotImplemented);
-    return createErrorResponse(
-      "Image editing is not fully supported yet.",
-      errMsgNotImplemented
-    );
-
-    // --- Keep structure for future implementation ---
-    /*
-    try {
-        // ... (API call logic) ...
-
-        // ... (Process result) ...
-
-        // return { role: 'assistant', content: images, usage: usage };
-
-    } catch (error: any) {
-        const errMsg = `Failed to edit image: ${error.message || error}`;
-        console.error(`${this.vendor} editImage error:`, error);
-        return createErrorResponse("Image editing failed.", errMsg);
-    }
     const model = modelNameFromOptions || this.modelConfig.apiName;
 
-    let prompt = textPrompt;
-    // ... (extract prompt logic similar to generateImage) ...
-
-    if (!prompt) {
-      throw new Error('A text prompt is required for image editing.');
-    }
-    if (!openaiImageEditOptions.image || openaiImageEditOptions.image.length === 0) {
-        throw new Error('An input image is required for editing.');
-    }
-
     try {
-        // Prepare image/mask inputs (requires async handling, fetching URLs, converting base64)
-        const imageFile = await this.prepareImageInput(openaiImageEditOptions.image[0]); // Needs implementation
-        const maskFile = openaiImageEditOptions.mask ? await this.prepareImageInput(openaiImageEditOptions.mask) : undefined; // Needs implementation
+      // Prepare image/mask inputs
+      const imageFiles = await Promise.all(
+        openaiImageEditOptions.image.map((img) => this.prepareImageInput(img))
+      );
+      const maskFile = openaiImageEditOptions.mask
+        ? await this.prepareImageInput(openaiImageEditOptions.mask)
+        : undefined;
 
-        const apiOptions: OpenAI.Images.ImageEditParams = {
-            model: model,
-            prompt: prompt,
-            image: imageFile, // This needs to be a File-like object or Buffer
-            mask: maskFile, // This needs to be a File-like object or Buffer
-            n: openaiImageEditOptions.n,
-            response_format: 'b64_json',
-            size: openaiImageEditOptions.size,
-            user: openaiImageEditOptions.user,
-        };
+      const apiOptions: OpenAI.Images.ImageEditParams = {
+        model: model,
+        prompt: prompt,
+        image: imageFiles, // Pass the array of prepared files
+        mask: maskFile,
+        n: openaiImageEditOptions.n,
+        //response_format: "b64_json", // Force b64_json
+        size: (openaiImageEditOptions.size === "auto"
+          ? undefined
+          : openaiImageEditOptions.size) as any, // Cast to any to bypass SDK type mismatch for gpt-image-1 sizes
+        user: openaiImageEditOptions.user,
+        // moderation: openaiImageEditOptions.moderation, // Removed: Not valid in ImageEditParams type
+      };
 
-        // Remove undefined keys
-        Object.keys(apiOptions).forEach(key => apiOptions[key as keyof typeof apiOptions] === undefined && delete apiOptions[key as keyof typeof apiOptions]);
+      // Remove undefined keys
+      Object.keys(apiOptions).forEach(
+        (key) =>
+          (apiOptions as any)[key] === undefined &&
+          delete (apiOptions as any)[key]
+      );
 
-        const result = await this.client.images.edit(apiOptions);
+      console.log(
+        `Snowgander: editImage: apiOptions: ${JSON.stringify({
+          ...apiOptions,
+          image: "[Prepared Files]",
+          mask: maskFile ? "[Prepared Mask]" : undefined,
+        })}` // Avoid logging large file data
+      );
 
-        const images: ImageDataBlock[] = result.data
-            ? result.data.filter(item => item.b64_json).map(item => ({
-                type: 'image_data',
-                mimeType: 'image/png',
-                base64Data: item.b64_json!,
+      const result = await this.client.images.edit(apiOptions);
+
+      console.log(`snowgander: editImage: Result: ${JSON.stringify(result)}`);
+
+      const images: ImageDataBlock[] = result.data
+        ? result.data
+            .filter((item) => item.b64_json)
+            .map((item) => ({
+              type: "image_data",
+              mimeType: "image/png", // Assuming PNG, might need adjustment based on API response or options
+              base64Data: item.b64_json!,
             }))
-            : [];
+        : [];
 
-        // Placeholder cost - adapt calculateImageCost if needed for edits
-        const usage = this.calculateImageCost(
-            openaiImageEditOptions.size,
-            undefined // Quality not applicable to edits API
-        );
+      if (images.length === 0) {
+        const errMsg = "OpenAI API returned success but no edited image data.";
+        console.error("editImage error:", errMsg);
+        return createErrorResponse("Failed to retrieve edited image.", errMsg);
+      }
 
-        return {
-            images: images,
-            usage: usage,
-        };
+      // Use usage data directly from the API response
+      const usage = this.mapApiUsageToUsageResponse(result.usage);
 
+      return {
+        role: "assistant",
+        content: images,
+        usage: usage,
+      };
     } catch (error: any) {
-        console.error(`${this.vendor} editImage error:`, error);
-        throw new Error(`Failed to edit image: ${error.message || error}`);
+      const errMsg = `Failed to edit image: ${error.message || error}`;
+      console.error(`${this.vendor} editImage error:`, error);
+      return createErrorResponse("Image editing failed.", errMsg);
     }
-    */
   }
 
-  // Placeholder Helper to calculate cost - Needs proper implementation using utils
-  private calculateImageCost(
-    size: OpenAI.Images.ImageGenerateParams["size"],
-    quality: OpenAI.Images.ImageGenerateParams["quality"],
-    promptTokens: number = 0 // Keep promptTokens for future use
+  // Helper to map OpenAI API usage object to our internal UsageResponse
+  private mapApiUsageToUsageResponse(
+    apiUsage: OpenAI.Images.ImagesResponse["usage"] | undefined
   ): UsageResponse {
-    // TODO: Implement actual cost calculation based on size, quality, prompt tokens,
-    // and this.modelConfig.inputTokenCost / outputTokenCost.
-    // This likely requires a new utility function in utils.ts.
+    const inputCostPerMillion = this.modelConfig.inputTokenCost || 0;
+    const outputCostPerMillion = this.modelConfig.outputTokenCost || 0;
 
-    console.warn(
-      "Placeholder cost calculation used for OpenAIImageAdapter. Implement proper cost logic."
+    // Default to 0 if API doesn't provide usage data
+    const inputTokens = apiUsage?.input_tokens ?? 0;
+    const outputTokens = apiUsage?.output_tokens ?? 0;
+    // Note: apiUsage.total_tokens might also be available, but we calculate totalCost from input/output
+
+    const inputCost = (inputTokens / 1_000_000) * inputCostPerMillion;
+    const outputCost = (outputTokens / 1_000_000) * outputCostPerMillion;
+    const totalCost = inputCost + outputCost;
+
+    console.log(
+      `Mapped API Usage: InputTokens=${inputTokens}, OutputTokens=${outputTokens}, InputCost=${inputCost}, OutputCost=${outputCost}, TotalCost=${totalCost}`
     );
-    // Return zero cost placeholder matching UsageResponse structure
+
     return {
-      inputCost: 0,
-      outputCost: 0,
-      totalCost: 0,
+      inputCost: inputCost,
+      outputCost: outputCost,
+      totalCost: totalCost,
     };
   }
 
-  // --- Helper needed for editImage ---
-  // private async prepareImageInput(imageBlock: ImageBlock | ImageDataBlock): Promise<Buffer | ???> {
-  //   // If ImageBlock (URL), fetch the image, get buffer
-  //   // If ImageDataBlock (base64), decode to buffer
-  //   // Return Buffer or appropriate type for OpenAI SDK
-  //   throw new NotImplementedError("prepareImageInput not implemented");
-  // }
+  // Helper to prepare image input for OpenAI SDK (handles URL and base64)
+  private async prepareImageInput(
+    imageBlock: ImageBlock | ImageDataBlock
+  ): Promise<any> {
+    // Reverted return type to any as Uploadable is not exported
+    try {
+      if (imageBlock.type === "image") {
+        // Handle URL
+        console.log(`Fetching image from URL: ${imageBlock.url}`);
+        const response = await fetch(imageBlock.url);
+        if (!response.ok) {
+          throw new Error(
+            `Failed to fetch image URL: ${response.statusText} (${imageBlock.url})`
+          );
+        }
+        // Use response.blob() which is compatible with toFile
+        const blob = await response.blob();
+        // Determine filename from URL or use a default
+        const filename = imageBlock.url.split("/").pop() || "image.png";
+        console.log(`Converting fetched blob to FileLike: ${filename}`);
+        return await toFile(blob, filename);
+      } else if (imageBlock.type === "image_data") {
+        // Handle base64 data
+        console.log(
+          `Converting base64 data (mimeType: ${imageBlock.mimeType}) to FileLike`
+        );
+        const buffer = Buffer.from(imageBlock.base64Data, "base64");
+        const filename = `image.${imageBlock.mimeType.split("/")[1] || "png"}`; // Create filename from mime type
+        console.log(`Created buffer, converting to FileLike: ${filename}`);
+        return await toFile(buffer, filename, { type: imageBlock.mimeType });
+      } else {
+        // Should not happen with correct typing, but handle defensively
+        throw new Error(
+          `Unsupported image block type: ${(imageBlock as any).type}`
+        );
+      }
+    } catch (error: any) {
+      console.error("Error preparing image input:", error);
+      throw new Error(`Failed to prepare image input: ${error.message}`);
+    }
+  }
 }

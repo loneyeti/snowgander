@@ -164,38 +164,26 @@ export interface AIRequestOptions {
 
 export interface OpenAIImageGenerationOptions {
   // prompt is usually taken from AIRequestOptions.prompt or messages
-  n?: number; // Number of images to generate
-  quality?: "standard" | "hd" | "low" | "medium" | "high" | "auto"; // Quality setting
-  response_format?: "url" | "b64_json"; // Default: b64_json expected by adapter
-  size?:
-    | "256x256"
-    | "512x512"
-    | "1024x1024"
-    | "1792x1024"
-    | "1024x1792"
-    | "1536x1024"
-    | "1024x1536";
-  style?: "vivid" | "natural"; // DALL-E 3 specific
+  n?: number; // Number of images to generate (default 1)
+  quality?: "low" | "medium" | "high" | "auto"; // Quality setting (default auto)
+  // response_format is always b64_json for this adapter
+  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto"; // Image dimensions (default auto)
   user?: string; // User identifier
-  background?: "transparent" | "opaque"; // GPT Image specific
-  output_compression?: number; // GPT Image specific (0-100 for jpeg/webp)
+  background?: "transparent" | "opaque" | "auto"; // Background setting (default auto, png/webp only)
+  output_compression?: number; // Compression level (0-100, jpeg/webp only)
+  moderation?: "auto" | "low"; // Moderation strictness (default auto)
+  // style is DALL-E 3 specific, removed
 }
 
 export interface OpenAIImageEditOptions {
   // prompt is usually taken from AIRequestOptions.prompt or messages
-  image: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64
-  mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64
-  n?: number; // Number of images to generate
-  response_format?: "url" | "b64_json"; // Default: b64_json expected by adapter
-  size?:
-    | "256x256"
-    | "512x512"
-    | "1024x1024"
-    | "1792x1024"
-    | "1024x1792"
-    | "1536x1024"
-    | "1024x1536";
+  image: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64 conversion
+  mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64 conversion
+  n?: number; // Number of images to generate (default 1)
+  // response_format is always b64_json for this adapter
+  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto"; // Image dimensions (default auto)
   user?: string; // User identifier
+  moderation?: "auto" | "low"; // Moderation strictness (default auto)
 }
 
 // --- Image Generation/Editing Response Types ---
