@@ -177,11 +177,12 @@ export interface OpenAIImageGenerationOptions {
 
 export interface OpenAIImageEditOptions {
   // prompt is usually taken from AIRequestOptions.prompt or messages
-  image: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64 conversion
+  image?: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64 conversion
   mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64 conversion
   n?: number; // Number of images to generate (default 1)
   // response_format is always b64_json for this adapter
   size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto"; // Image dimensions (default auto)
+  quality?: "low" | "medium" | "high" | "auto"; // Quality setting (default auto)
   user?: string; // User identifier
   moderation?: "auto" | "low"; // Moderation strictness (default auto)
 }

@@ -9,7 +9,8 @@ import {
   ChatResponse,
   ContentBlock,
   ImageGenerationResponse,
-  ImageEditResponse,
+  ImageEditResponse, // Keep this if used elsewhere, or remove if only OpenAIImageEditOptions is needed
+  OpenAIImageEditOptions, // Add this back
   ImageDataBlock,
   ImageBlock,
   MCPAvailableTool,
@@ -103,9 +104,59 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
     };
 
     try {
-      if (openaiImageGenerationOptions) {
+      // --- Handle visionUrl for Image Editing ---
+      if (chat.visionUrl) {
+        console.log(
+          `${this.vendor}: visionUrl detected, attempting image edit.`
+        );
+        const editOptionsFromChat = chat.openaiImageEditOptions;
+
+        if (!editOptionsFromChat) {
+          const errMsg = `${
+            this.vendor
+          } adapter requires openaiImageEditOptions when visionUrl is provided for image editing. Chat: ${JSON.stringify(
+            chat
+          )}`;
+          console.error("sendChat error:", errMsg);
+          return createErrorResponse(
+            "Image editing options missing for visionUrl.",
+            errMsg
+          ) as ChatResponse;
+        }
+
+        // Create ImageBlock from visionUrl
+        const inputImageBlock: ImageBlock = {
+          type: "image",
+          url: chat.visionUrl,
+        };
+
+        // Use provided edit options but override the image source
+        const finalEditOptions: OpenAIImageEditOptions = {
+          ...editOptionsFromChat,
+          image: [inputImageBlock], // Override with visionUrl image
+        };
+
         const options: AIRequestOptions = {
-          ...baseOptions,
+          ...baseOptions, // Contains model, messages, prompt, systemPrompt
+          openaiImageEditOptions: finalEditOptions,
+        } as AIRequestOptions; // Cast needed because baseOptions is partial
+
+        // Call editImage
+        console.log(
+          `${this.vendor}: Calling editImage with visionUrl as input.`
+        );
+        const result = await this.editImage(options);
+        return {
+          role: result.role,
+          content: result.content,
+          usage: result.usage,
+        };
+      }
+      // --- End visionUrl Handling ---
+      // Original logic if visionUrl is not present
+      else if (openaiImageGenerationOptions) {
+        const options: AIRequestOptions = {
+          ...baseOptions, // baseOptions already defined above
           openaiImageGenerationOptions: openaiImageGenerationOptions,
         } as AIRequestOptions;
 
@@ -433,10 +484,25 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         }
         // Use response.blob() which is compatible with toFile
         const blob = await response.blob();
+        // Get the content type from the response header
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.startsWith("image/")) {
+          console.warn(
+            `Fetched image URL ${imageBlock.url} returned non-image content-type: ${contentType}. Attempting to proceed, but API may reject.`
+          );
+          // Consider throwing an error here or defaulting more carefully
+        }
         // Determine filename from URL or use a default
-        const filename = imageBlock.url.split("/").pop() || "image.png";
-        console.log(`Converting fetched blob to FileLike: ${filename}`);
-        return await toFile(blob, filename);
+        const filename = imageBlock.url.split("/").pop() || "image.png"; // Keep filename logic
+        console.log(
+          `Converting fetched blob to FileLike: ${filename} (Type: ${
+            contentType || "unknown"
+          })`
+        );
+        // Pass the inferred content type to toFile
+        return await toFile(blob, filename, {
+          type: contentType || undefined, // Pass contentType, let toFile handle if null/undefined
+        });
       } else if (imageBlock.type === "image_data") {
         // Handle base64 data
         console.log(
