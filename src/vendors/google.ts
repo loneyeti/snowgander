@@ -116,6 +116,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       };
       if (budgetTokens && budgetTokens > 0) {
         (generationConfig as any).thinkingConfig.thinkingBudget = budgetTokens;
+      } else if (budgetTokens === 0) {
+        (generationConfig as any).thinkingConfig.thinkingBudget = 0;
       }
     }
     // Image generation modality - check if new SDK handles this differently
