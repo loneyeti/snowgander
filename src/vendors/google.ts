@@ -72,7 +72,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
               });
             } else if (block.type === "thinking") {
               // Represent thinking as text for now, until SDK confirms 'thought' part
-              parts.push({ text: `<thinking>${block.thinking}</thinking>` });
+              parts.push({ text: `${block.thinking}` });
             } else if (block.type === "redacted_thinking") {
               parts.push({
                 text: `<redacted_thinking>${block.data}</redacted_thinking>`,
