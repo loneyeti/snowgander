@@ -10,33 +10,33 @@ import {
   Chat,
   ImageBlock,
   ChatResponse,
-  NotImplementedError, // Added missing import
+  NotImplementedError,
 } from "../../types";
 import {
-  GoogleGenerativeAI, // Import the original class
+  GoogleGenAI, // Import the NEW class
   HarmCategory,
   HarmBlockThreshold,
-} from "@google/generative-ai";
-import { computeResponseCost } from "../../utils";
+} from "@google/genai"; // Use the NEW SDK path
+import { computeResponseCost, getImageDataFromUrl } from "../../utils"; // Import the function to mock
+// No longer need the GoogleAdapterModule type import
+// import type * as GoogleAdapterModule from "../google";
 
 // --- Define Mocks FIRST ---
+// Mock for the new SDK structure: client.models.generateContent
 const mockGenerateContent = jest.fn();
-const mockSendMessage = jest.fn();
-const mockStartChat = jest
-  .fn()
-  .mockReturnValue({ sendMessage: mockSendMessage });
-const mockGetGenerativeModel = jest.fn().mockReturnValue({
-  generateContent: mockGenerateContent,
-  startChat: mockStartChat,
-});
-// IMPORTANT: Define the constructor mock implementation referencing the others
-const mockGoogleAIConstructor = jest.fn().mockImplementation(() => ({
-  getGenerativeModel: mockGetGenerativeModel,
+// Mock for the constructor
+const mockGoogleGenAIConstructor = jest.fn().mockImplementation(() => ({
+  models: {
+    generateContent: mockGenerateContent,
+  },
+  // Add other methods if needed by the adapter, but models.generateContent is primary
 }));
 
 // --- Mock the SDK using jest.doMock (not hoisted) ---
-jest.doMock("@google/generative-ai", () => ({
-  GoogleGenerativeAI: mockGoogleAIConstructor,
+// Mock the NEW SDK path
+jest.doMock("@google/genai", () => ({
+  GoogleGenAI: mockGoogleGenAIConstructor,
+  // Mock other exports if needed by the adapter
   HarmCategory: {
     HARM_CATEGORY_HARASSMENT: "HARM_CATEGORY_HARASSMENT",
     HARM_CATEGORY_HATE_SPEECH: "HARM_CATEGORY_HATE_SPEECH",
@@ -48,12 +48,20 @@ jest.doMock("@google/generative-ai", () => ({
   },
 }));
 
+// --- Mock the utility function that uses file-type ---
+const mockGetImageDataFromUrl = jest.fn();
+jest.mock("../../utils", () => ({
+  // Keep other exports from utils if needed, mock only getImageDataFromUrl
+  ...jest.requireActual("../../utils"), // Keep actual implementations of other utils
+  getImageDataFromUrl: (...args: any[]) => mockGetImageDataFromUrl(...args),
+}));
+
 // --- Get Typed Mock Constructor AFTER jest.doMock ---
-const MockedGoogleGenerativeAI = GoogleGenerativeAI as jest.MockedClass<
-  typeof GoogleGenerativeAI
->;
+// Cast the mock constructor to the correct type from the NEW SDK
+const MockedGoogleGenAI = GoogleGenAI as jest.MockedClass<typeof GoogleGenAI>;
 
 describe("GoogleAIAdapter", () => {
+  // Import the adapter normally now
   let GoogleAIAdapter: typeof import("../google").GoogleAIAdapter;
   let adapter: import("../google").GoogleAIAdapter;
 
@@ -75,28 +83,29 @@ describe("GoogleAIAdapter", () => {
     outputTokenCost: 0.375 / 1_000_000,
   };
 
+  // No need for dynamic import in beforeAll anymore
   beforeAll(async () => {
+    // Import normally
     const module = await import("../google");
     GoogleAIAdapter = module.GoogleAIAdapter;
   });
 
   beforeEach(() => {
-    mockGoogleAIConstructor.mockClear();
-    mockGetGenerativeModel.mockClear();
+    // Clear mocks before each test
+    mockGoogleGenAIConstructor.mockClear();
     mockGenerateContent.mockClear();
-    mockStartChat.mockClear();
-    mockSendMessage.mockClear();
 
-    mockGetGenerativeModel.mockReturnValue({
-      generateContent: mockGenerateContent,
-      startChat: mockStartChat,
-    });
-
+    // Re-initialize adapter before each test
     adapter = new GoogleAIAdapter(mockConfig, mockGeminiProVision);
   });
 
-  it("should initialize GoogleAI client with correct config", () => {
-    expect(mockGoogleAIConstructor).toHaveBeenCalledTimes(1);
+  it("should initialize GoogleGenAI client with correct config", () => {
+    // Adapter initialization happens in beforeEach
+    expect(mockGoogleGenAIConstructor).toHaveBeenCalledTimes(1);
+    // Check if the constructor was called with the expected API key config
+    expect(mockGoogleGenAIConstructor).toHaveBeenCalledWith({
+      apiKey: mockConfig.apiKey,
+    });
   });
 
   it("should reflect capabilities from ModelConfig", () => {
@@ -107,61 +116,129 @@ describe("GoogleAIAdapter", () => {
     expect(adapter.outputTokenCost).toBe(mockGeminiProVision.outputTokenCost);
   });
 
+  // --- Mocks needed by multiple test blocks ---
+  // Mock response structure for the NEW SDK
+  const mockBasicApiResponse = {
+    candidates: [
+      {
+        content: {
+          role: "model",
+          parts: [{ text: "Hi there!" }],
+        },
+        // Other candidate properties like finishReason, safetyRatings etc. might exist
+      },
+    ],
+    usageMetadata: {
+      promptTokenCount: 10,
+      candidatesTokenCount: 5,
+      totalTokenCount: 15,
+    },
+  }; // Removed extra };
+
+  // Mock axios for visionUrl test - Define outside generateResponse block
+  const mockAxiosGet = jest.fn();
+  jest.mock("axios", () => ({
+    get: (...args: any[]) => mockAxiosGet(...args),
+  }));
+
+  // utils.getImageDataFromUrl is mocked above
   // --- generateResponse Tests ---
   describe("generateResponse", () => {
     const basicMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: "Hello Gemini!" }] },
     ];
     const basicOptions: AIRequestOptions = {
-      model: mockGeminiProVision.apiName,
+      model: mockGeminiPro.apiName, // Use non-vision model for basic text test
       messages: basicMessages,
     };
 
-    it("should call Google generateContent with correct basic parameters", async () => {
-      const mockApiResponse = {
-        response: {
-          text: () => "Hi there!",
-          candidates: [
-            { content: { role: "model", parts: [{ text: "Hi there!" }] } },
-          ],
-        },
-      };
-      mockGenerateContent.mockResolvedValue(mockApiResponse);
+    it("should call Google models.generateContent with correct basic parameters", async () => {
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      // Use the non-vision adapter for this basic text test
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
 
-      await adapter.generateResponse(basicOptions);
+      await textAdapter.generateResponse(basicOptions);
 
       expect(mockGenerateContent).toHaveBeenCalledTimes(1);
+      // Check the NEW argument structure (single object)
       expect(mockGenerateContent).toHaveBeenCalledWith({
+        model: mockGeminiPro.apiName,
         contents: [{ role: "user", parts: [{ text: "Hello Gemini!" }] }],
+        generationConfig: {}, // Empty by default
+        // systemInstruction should be absent by default
       });
     });
 
-    it("should map Google response to AIResponse format", async () => {
-      const mockApiResponse = {
-        response: {
-          text: () => "Response from Gemini.",
-          candidates: [
-            {
-              content: {
-                role: "model",
-                parts: [{ text: "Response from Gemini." }],
-              },
-            },
-          ],
-        },
-      };
-      mockGenerateContent.mockResolvedValue(mockApiResponse);
+    it("should map Google response to AIResponse format including usage", async () => {
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro); // Use model with costs defined
 
-      const response = await adapter.generateResponse(basicOptions);
+      const response = await textAdapter.generateResponse(basicOptions);
+
+      const expectedInputCost = computeResponseCost(
+        mockBasicApiResponse.usageMetadata.promptTokenCount,
+        mockGeminiPro.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        mockBasicApiResponse.usageMetadata.candidatesTokenCount,
+        mockGeminiPro.outputTokenCost!
+      );
+      const expectedUsage: UsageResponse = {
+        inputCost: expectedInputCost,
+        outputCost: expectedOutputCost,
+        totalCost: expectedInputCost + expectedOutputCost,
+      }; // Removed extra };
 
       expect(response).toEqual<AIResponse>({
         role: "assistant",
-        content: [{ type: "text", text: "Response from Gemini." }],
-        usage: undefined,
+        content: [{ type: "text", text: "Hi there!" }], // Text from the mock response part
+        usage: expectedUsage,
       });
     });
 
-    it("should map ImageDataBlock to Google Part format", async () => {
+    // --- Tests for specific features ---
+
+    it("should handle systemPrompt correctly", async () => {
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      const optionsWithSystemPrompt: AIRequestOptions = {
+        ...basicOptions,
+        systemPrompt: "Be helpful.",
+      };
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+
+      await textAdapter.generateResponse(optionsWithSystemPrompt);
+
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          systemInstruction: {
+            role: "system",
+            parts: [{ text: "Be helpful." }],
+          },
+          contents: [{ role: "user", parts: [{ text: "Hello Gemini!" }] }], // Contents remain separate
+        })
+      );
+    });
+
+    it("should handle maxTokens correctly", async () => {
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      const optionsWithMaxTokens: AIRequestOptions = {
+        ...basicOptions,
+        maxTokens: 150,
+      };
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+
+      await textAdapter.generateResponse(optionsWithMaxTokens);
+
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          generationConfig: { maxOutputTokens: 150 },
+        })
+      );
+    });
+
+    // --- Vision Tests (using the vision-capable adapter initialized in beforeEach) ---
+    it("should map ImageDataBlock to Google Part format (Vision)", async () => {
+      // Use the vision-capable adapter initialized in beforeEach
       const imageData: ImageDataBlock = {
         type: "image_data",
         mimeType: "image/png",
@@ -173,93 +250,415 @@ describe("GoogleAIAdapter", () => {
           content: [imageData, { type: "text", text: "What is this PNG?" }],
         },
       ];
+      // Ensure options use the correct vision model
       const optionsWithImage: AIRequestOptions = {
-        ...basicOptions,
+        model: mockGeminiProVision.apiName,
         messages: messagesWithImage,
       };
-      const mockApiResponse = {
-        response: {
-          text: () => "A PNG.",
-          candidates: [
-            { content: { role: "model", parts: [{ text: "A PNG." }] } },
-          ],
+      // Mock response structure for new SDK
+      const mockVisionApiResponse = {
+        candidates: [
+          { content: { role: "model", parts: [{ text: "It's a PNG." }] } },
+        ],
+        usageMetadata: {
+          promptTokenCount: 50,
+          candidatesTokenCount: 5,
+          totalTokenCount: 55,
         },
       };
-      mockGenerateContent.mockResolvedValue(mockApiResponse);
+      mockGenerateContent.mockResolvedValue(mockVisionApiResponse);
 
-      await adapter.generateResponse(optionsWithImage);
+      await adapter.generateResponse(optionsWithImage); // adapter is vision capable
 
-      expect(mockGenerateContent).toHaveBeenCalledWith({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                inlineData: { mimeType: "image/png", data: "base64pngstring" },
-              },
-              { text: "What is this PNG?" },
-            ],
-          },
-        ],
-      });
+      // Assert call structure for new SDK
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: mockGeminiProVision.apiName,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "image/png",
+                    data: "base64pngstring",
+                  },
+                },
+                { text: "What is this PNG?" },
+              ],
+            },
+          ],
+          generationConfig: {}, // Default empty
+        })
+      );
     });
 
-    it("should warn and skip ImageBlock (URL)", async () => {
+    // Clear axios/file-type mocks before each relevant test if needed,
+    // but since they are defined within this describe block,
+    // they should reset automatically. Add explicit clears if issues arise.
+    // beforeEach(() => {
+    //     mockAxiosGet.mockClear();
+    // Clear the mock for the utility function before each test
+    beforeEach(() => {
+      mockAxiosGet.mockClear(); // Still need to clear axios mock if used elsewhere
+      mockGetImageDataFromUrl.mockClear();
+    });
+
+    it("should handle visionUrl correctly", async () => {
+      // Use the vision-capable adapter
+      const visionUrl = "http://example.com/image.jpeg";
+      const optionsWithVisionUrl: AIRequestOptions = {
+        model: mockGeminiProVision.apiName,
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "Describe this image." }],
+          },
+        ],
+        visionUrl: visionUrl,
+      };
+      const mockImageData = {
+        mimeType: "image/jpeg",
+        base64Data: "base64jpegstring",
+      };
+      const mockAxiosResponse = {
+        data: Buffer.from("jpegdata", "binary"),
+        headers: { "content-type": "image/jpeg" },
+      };
+      // Setup mocks for this specific test
+      mockAxiosGet.mockResolvedValue(mockAxiosResponse);
+      // Setup mocks for this specific test
+      mockAxiosGet.mockResolvedValue(mockAxiosResponse); // Keep axios mock for completeness if adapter still uses it internally for other things
+      // Set the return value for the mocked utility function
+      mockGetImageDataFromUrl.mockResolvedValue(mockImageData);
+
+      const mockVisionApiResponse = {
+        candidates: [
+          { content: { role: "model", parts: [{ text: "It's a JPEG." }] } },
+        ],
+        usageMetadata: {
+          promptTokenCount: 60,
+          candidatesTokenCount: 6,
+          totalTokenCount: 66,
+        },
+      };
+      mockGenerateContent.mockResolvedValue(mockVisionApiResponse);
+
+      await adapter.generateResponse(optionsWithVisionUrl);
+
+      // We no longer need to check mockAxiosGet because we mocked the function that calls it.
+      // expect(mockAxiosGet).toHaveBeenCalledWith(visionUrl, {
+      //   responseType: "arraybuffer",
+      // });
+
+      // Verify the mocked utility function was called
+      expect(mockGetImageDataFromUrl).toHaveBeenCalledWith(visionUrl);
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: mockGeminiProVision.apiName,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { text: "Describe this image." },
+                // The image part should be added here
+                {
+                  inlineData: {
+                    mimeType: mockImageData.mimeType,
+                    data: mockImageData.base64Data,
+                  },
+                },
+              ],
+            },
+          ],
+        })
+      );
+    });
+
+    it("should warn and skip ImageBlock (URL) - still relevant", async () => {
+      // Use the vision-capable adapter
       const imageBlock: ImageBlock = {
         type: "image",
         url: "http://example.com/image.gif",
       };
-      const messagesWithImage: Message[] = [
+      const messagesWithImageUrl: Message[] = [
         {
           role: "user",
           content: [imageBlock, { type: "text", text: "What about this GIF?" }],
         },
       ];
-      const optionsWithImage: AIRequestOptions = {
-        ...basicOptions,
-        messages: messagesWithImage,
+      // Ensure options use the correct vision model
+      const optionsWithImageUrl: AIRequestOptions = {
+        model: mockGeminiProVision.apiName,
+        messages: messagesWithImageUrl,
       };
+      // Response structure for new SDK
       const mockApiResponse = {
-        response: {
-          text: () => "A GIF URL.",
-          candidates: [
-            { content: { role: "model", parts: [{ text: "A GIF URL." }] } },
-          ],
+        candidates: [
+          { content: { role: "model", parts: [{ text: "A GIF URL." }] } },
+        ],
+        usageMetadata: {
+          promptTokenCount: 12,
+          candidatesTokenCount: 4,
+          totalTokenCount: 16,
         },
       };
       mockGenerateContent.mockResolvedValue(mockApiResponse);
-      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation(); // Keep spy
 
-      await adapter.generateResponse(optionsWithImage);
+      await adapter.generateResponse(optionsWithImageUrl); // Use vision adapter
 
-      expect(mockGenerateContent).toHaveBeenCalledWith({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: "What about this GIF?" }],
-          },
-        ],
-      });
+      // Check that the image block part was NOT included in the call to the SDK
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: mockGeminiProVision.apiName,
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: "What about this GIF?" }], // Only text part remains
+            },
+          ],
+        })
+      );
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining(
           "Google adapter received 'image' block (URL), needs pre-processing to base64 inlineData."
         )
       );
-      consoleWarnSpy.mockRestore();
+      consoleWarnSpy.mockRestore(); // Restore console.warn
+    });
+
+    it("should handle thinking config correctly", async () => {
+      const thinkingModelConfig: ModelConfig = {
+        ...mockGeminiPro,
+        isThinking: true,
+      };
+      const thinkingAdapter = new GoogleAIAdapter(
+        mockConfig,
+        thinkingModelConfig
+      );
+      const optionsWithThinking: AIRequestOptions = {
+        ...basicOptions,
+        budgetTokens: 50, // Example budget
+      };
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse); // Use basic response for simplicity
+
+      await thinkingAdapter.generateResponse(optionsWithThinking);
+
+      expect(mockGenerateContent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          generationConfig: expect.objectContaining({
+            thinkingConfig: { includeThoughts: true, thinkingBudget: 50 },
+          }),
+        })
+      );
+    });
+
+    it("should parse thinking response part", async () => {
+      const thinkingModelConfig: ModelConfig = {
+        ...mockGeminiPro,
+        isThinking: true,
+      };
+      const thinkingAdapter = new GoogleAIAdapter(
+        mockConfig,
+        thinkingModelConfig
+      );
+      const mockThinkingApiResponse = {
+        candidates: [
+          {
+            content: {
+              role: "model",
+              parts: [
+                { thought: true, text: "Thinking step 1..." }, // Thought part
+                { text: "Okay, here is the answer." },
+              ],
+            },
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 20,
+          candidatesTokenCount: 15,
+          totalTokenCount: 35,
+        },
+      };
+      mockGenerateContent.mockResolvedValue(mockThinkingApiResponse);
+
+      const response = await thinkingAdapter.generateResponse(basicOptions);
+
+      expect(response.content).toEqual([
+        {
+          type: "thinking",
+          thinking: "Thinking step 1...",
+          signature: "google",
+        },
+        { type: "text", text: "Okay, here is the answer." },
+      ]);
+    });
+
+    it("should throw error for invalid response structure", async () => {
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+
+      const invalidResponse1 = { candidates: null }; // Missing candidates
+      mockGenerateContent.mockResolvedValue(invalidResponse1);
+      await expect(textAdapter.generateResponse(basicOptions)).rejects.toThrow(
+        "Invalid response structure from @google/genai API"
+      );
+
+      const invalidResponse2 = { candidates: [{ content: null }] }; // Missing content
+      mockGenerateContent.mockResolvedValue(invalidResponse2);
+      await expect(textAdapter.generateResponse(basicOptions)).rejects.toThrow(
+        "Invalid response structure from @google/genai API"
+      );
+
+      const invalidResponse3 = { candidates: [{ content: { parts: null } }] }; // Missing parts
+      mockGenerateContent.mockResolvedValue(invalidResponse3);
+      await expect(textAdapter.generateResponse(basicOptions)).rejects.toThrow(
+        "Invalid response structure from @google/genai API"
+      );
     });
   });
 
   // --- sendChat Tests ---
   describe("sendChat", () => {
-    // Placeholder for future tests
+    // Define basic chat object with all optional fields explicitly undefined
+    const basicChat: Chat = {
+      model: mockGeminiPro.apiName,
+      responseHistory: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "Previous question" }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Previous answer" }],
+        },
+      ],
+      prompt: "Current question?",
+      maxTokens: 100,
+      systemPrompt: "Be concise.",
+      visionUrl: null, // Use null for optional props
+      imageURL: null, // Use null for optional props
+      budgetTokens: null, // Use null for optional props
+    };
+
+    it("should call generateResponse with correctly mapped Chat options", async () => {
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+      // Spy on the instance's generateResponse method
+      const generateResponseSpy = jest
+        .spyOn(textAdapter, "generateResponse")
+        .mockResolvedValue({
+          // Provide a minimal valid AIResponse for the spy
+          role: "assistant",
+          content: [{ type: "text", text: "Mocked response" }],
+        });
+      // Mock the underlying SDK call just in case, though the spy should prevent it
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+
+      await textAdapter.sendChat(basicChat);
+
+      expect(generateResponseSpy).toHaveBeenCalledTimes(1);
+      // Explicitly map null -> undefined for properties where AIRequestOptions expects undefined
+      const expectedOptions: AIRequestOptions = {
+        model: basicChat.model,
+        messages: [
+          ...basicChat.responseHistory,
+          {
+            role: "user",
+            content: [{ type: "text", text: basicChat.prompt! }],
+          },
+        ],
+        maxTokens:
+          basicChat.maxTokens === null ? undefined : basicChat.maxTokens, // Map null to undefined
+        budgetTokens:
+          basicChat.budgetTokens === null ? undefined : basicChat.budgetTokens, // Map null to undefined
+        systemPrompt: basicChat.systemPrompt, // AIRequestOptions allows null here
+        visionUrl:
+          basicChat.visionUrl === null ? undefined : basicChat.visionUrl, // Map null to undefined
+      };
+      expect(generateResponseSpy).toHaveBeenCalledWith(expectedOptions);
+
+      generateResponseSpy.mockRestore(); // Clean up spy
+    });
+
+    it("should return the result from generateResponse", async () => {
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+      const mockAiResponse: AIResponse = {
+        role: "assistant",
+        content: [{ type: "text", text: "Chat response" }],
+        usage: { inputCost: 0.1, outputCost: 0.2, totalCost: 0.3 },
+      };
+      // Mock generateResponse directly for this test
+      const generateResponseSpy = jest
+        .spyOn(textAdapter, "generateResponse")
+        .mockResolvedValue(mockAiResponse);
+
+      const response = await textAdapter.sendChat(basicChat);
+
+      expect(response).toEqual<ChatResponse>({
+        role: mockAiResponse.role,
+        content: mockAiResponse.content,
+        usage: mockAiResponse.usage,
+      });
+
+      generateResponseSpy.mockRestore();
+    });
+
+    it("should handle chat with visionUrl", async () => {
+      // Use vision adapter (initialized in global beforeEach)
+      const chatWithVision: Chat = {
+        ...basicChat,
+        model: mockGeminiProVision.apiName, // Use vision model
+        visionUrl: "http://example.com/image.png",
+        prompt: "What's in this image?",
+      };
+      const generateResponseSpy = jest
+        .spyOn(adapter, "generateResponse")
+        .mockResolvedValue({
+          role: "assistant",
+          content: [{ type: "text", text: "Mocked vision response" }],
+        });
+      // Mock underlying calls just in case
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      // Mock underlying calls for sendChat test
+      mockGenerateContent.mockResolvedValue(mockBasicApiResponse);
+      mockAxiosGet.mockResolvedValue({
+        data: Buffer.from("pngdata", "binary"),
+        headers: { "content-type": "image/png" },
+      });
+      // Set the return value for the mocked utility function for this test
+      mockGetImageDataFromUrl.mockResolvedValue({
+        mimeType: "image/png",
+        base64Data: "base64pngstring", // Example data consistent with the test
+      });
+
+      await adapter.sendChat(chatWithVision); // Use vision adapter instance
+
+      expect(generateResponseSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          visionUrl: chatWithVision.visionUrl,
+          model: mockGeminiProVision.apiName,
+          messages: [
+            ...chatWithVision.responseHistory,
+            {
+              role: "user",
+              content: [{ type: "text", text: chatWithVision.prompt! }],
+            }, // Prompt text still included
+          ],
+        })
+      );
+      generateResponseSpy.mockRestore();
+    });
   });
 
   // --- generateImage Tests ---
+  // This test remains valid as the method signature/behavior hasn't changed
   describe("generateImage", () => {
     it("should throw NotImplementedError with correct message", async () => {
       // Use AIRequestOptions as required by the updated interface
-      const dummyOptions: AIRequestOptions = { model: 'test', messages: [] };
-      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(NotImplementedError);
+      const dummyOptions: AIRequestOptions = { model: "test", messages: [] };
+      await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
+        NotImplementedError
+      );
       // Check the specific error message from the adapter
       await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
         "Google generates images inline with text, use generateResponse/sendChat."

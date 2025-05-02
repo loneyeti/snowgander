@@ -279,9 +279,11 @@ export class AnthropicAdapter implements AIVendorAdapter {
   }
 
   // Updated signature to match AIVendorAdapter interface
-  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
+  async generateImage(options: AIRequestOptions): Promise<AIResponse> {
     // Throw NotImplementedError as Anthropic doesn't support image generation
-    throw new NotImplementedError("Image generation not supported by Anthropic");
+    throw new NotImplementedError(
+      "Image generation not supported by Anthropic"
+    );
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {

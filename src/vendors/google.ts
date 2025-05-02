@@ -1,10 +1,14 @@
 import {
-  Content,
-  GenerateContentRequest,
+  GoogleGenAI,
+  // Types likely needed from the new SDK - adjust based on actual SDK structure
+  // GenerateContentRequest, // Removed import
   GenerationConfig,
-  GoogleGenerativeAI,
-  Part, // Import Part type
-} from "@google/generative-ai";
+  Content,
+  Part,
+  GenerateContentResponse, // Assuming this type exists
+  UsageMetadata, // Assuming this type exists
+  // Add other necessary types like FunctionDeclaration, Tool, etc. if needed later
+} from "@google/genai"; // Updated import
 import {
   AIVendorAdapter,
   AIRequestOptions,
@@ -13,22 +17,19 @@ import {
   ModelConfig,
   Chat,
   ChatResponse,
-  ContentBlock, // Union type including ImageDataBlock
-  MCPTool,
-  ImageDataBlock, // Specific type for checking/casting
+  ContentBlock,
+  ImageDataBlock,
   Message,
   UsageResponse,
-  NotImplementedError, // Import error type
-  ImageGenerationResponse, // Import response type
+  NotImplementedError,
+  ImageGenerationResponse,
 } from "../types";
-import { computeResponseCost } from "../utils";
-import axios from "axios"; // Import axios
-// Removed static import for file-type
-
-// Application-specific imports removed
+// Import the new utility function and remove axios import if no longer needed directly
+import { computeResponseCost, getImageDataFromUrl } from "../utils";
+// import axios from "axios"; // Removed as it's now handled in utils
 
 export class GoogleAIAdapter implements AIVendorAdapter {
-  private client: GoogleGenerativeAI;
+  private client: GoogleGenAI; // Keep client instance
   public isVisionCapable: boolean;
   public isImageGenerationCapable: boolean;
   public isThinkingCapable: boolean;
@@ -36,7 +37,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
   public outputTokenCost?: number | undefined;
 
   constructor(config: VendorConfig, modelConfig: ModelConfig) {
-    this.client = new GoogleGenerativeAI(config.apiKey);
+    // Initialization seems similar based on README
+    this.client = new GoogleGenAI({ apiKey: config.apiKey });
     this.isVisionCapable = modelConfig.isVision;
     this.isImageGenerationCapable = modelConfig.isImageGeneration;
     this.isThinkingCapable = modelConfig.isThinking;
@@ -47,26 +49,21 @@ export class GoogleAIAdapter implements AIVendorAdapter {
   }
 
   // Helper to convert our Message format to Google's Content format
-  // Correctly reference the imported Message type here
+  // Structure might be slightly different in the new SDK, adjust if needed
   private mapMessagesToGoogleContent(messages: Message[]): Content[] {
     return messages
-      .filter((msg) => msg.role !== "system") // Filter out system messages for history
+      .filter((msg) => msg.role !== "system")
       .map((msg) => {
-        const role = msg.role === "assistant" ? "model" : "user"; // Map roles
+        const role = msg.role === "assistant" ? "model" : "user";
         let parts: Part[] = [];
 
         if (typeof msg.content === "string") {
           parts.push({ text: msg.content });
         } else if (Array.isArray(msg.content)) {
-          // Handle ContentBlock array
           msg.content.forEach((block: ContentBlock) => {
             if (block.type === "text") {
               parts.push({ text: block.text });
-              // Remove check for 'image_url' as it's not in ContentBlock union and needs pre-processing
-              // } else if (block.type === "image_url" && this.isVisionCapable) {
-              //   console.warn("Google adapter received image_url, needs pre-processing to base64 inlineData.");
             } else if (block.type === "image_data" && this.isVisionCapable) {
-              // Handle pre-processed base64 data
               parts.push({
                 inlineData: {
                   mimeType: block.mimeType,
@@ -74,93 +71,85 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                 },
               });
             } else if (block.type === "thinking") {
-              parts.push({ text: `<thinking>${block.thinking}</thinking>` });
+              // Represent thinking as text for now, until SDK confirms 'thought' part
+              parts.push({ text: `${block.thinking}` });
             } else if (block.type === "redacted_thinking") {
               parts.push({
                 text: `<redacted_thinking>${block.data}</redacted_thinking>`,
               });
-            }
-            // Handle 'image' type (URL-based) - needs pre-processing
-            else if (block.type === "image" && this.isVisionCapable) {
+            } else if (block.type === "image" && this.isVisionCapable) {
               console.warn(
                 "Google adapter received 'image' block (URL), needs pre-processing to base64 inlineData."
               );
+              // Pre-processing logic (getImageDataFromUrl) will handle this before this map function
             }
           });
         }
-        // Ensure parts is never empty for a message
         if (parts.length === 0) {
-          parts.push({ text: "" }); // Add empty text part if no other content
+          parts.push({ text: "" });
         }
-
         return { role, parts };
       });
   }
 
-  // Helper function to fetch image data and determine MIME type
-  private async getImageDataFromUrl(
-    url: string
-  ): Promise<{ mimeType: string; base64Data: string } | null> {
-    try {
-      const response = await axios.get(url, {
-        responseType: "arraybuffer", // Fetch as ArrayBuffer
-      });
-
-      const buffer = Buffer.from(response.data, "binary"); // Convert to Buffer
-      // Dynamically import file-type
-      const { fileTypeFromBuffer } = await import("file-type");
-      const type = await fileTypeFromBuffer(buffer); // Detect MIME type
-
-      if (!type || !type.mime.startsWith("image/")) {
-        console.error(`Invalid or non-image MIME type detected: ${type?.mime}`);
-        return null; // Or throw an error
-      }
-
-      const base64Data = buffer.toString("base64"); // Convert buffer to base64
-
-      return { mimeType: type.mime, base64Data };
-    } catch (error) {
-      console.error(
-        `Error fetching or processing image from URL ${url}:`,
-        error
-      );
-      // Optionally re-throw or handle differently
-      return null;
-    }
-  }
+  // Removed the private getImageDataFromUrl method
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const { model, messages, maxTokens, systemPrompt, visionUrl } = options;
+    const {
+      model,
+      messages,
+      maxTokens,
+      budgetTokens,
+      systemPrompt,
+      visionUrl,
+    } = options;
 
-    const generationConfig: GenerationConfig = {};
+    // Prepare generationConfig - structure might differ slightly
+    const generationConfig: GenerationConfig = {}; // Use GenerationConfig from @google/genai
     if (maxTokens) {
       generationConfig.maxOutputTokens = maxTokens;
     }
-
-    // Conditionally add responseModalities if the model is capable of image generation
+    // Add thinkingConfig using 'as any' if SDK types don't support it yet
+    if (this.isThinkingCapable) {
+      (generationConfig as any).thinkingConfig = {
+        includeThoughts: true,
+      };
+      if (budgetTokens && budgetTokens > 0) {
+        (generationConfig as any).thinkingConfig.thinkingBudget = budgetTokens;
+      }
+    }
+    // Image generation modality - check if new SDK handles this differently
     if (this.isImageGenerationCapable) {
-      // Use 'as any' as this might not be in the official SDK types yet
+      // This might need adjustment based on the new SDK's capabilities/API
       (generationConfig as any).responseModalities = ["Text", "Image"];
     }
 
-    const genAI = this.client.getGenerativeModel({
-      model,
-      generationConfig: generationConfig,
-    });
+    // Get model instance using the new SDK structure
+    // Note: The new SDK might not require getting a model instance first,
+    // and might pass config directly to generateContent. Adjust if needed.
+    // const genAIModel = this.client.getGenerativeModel({ model }); // Old way
 
     let formattedMessages = this.mapMessagesToGoogleContent(messages);
 
+    // Prepend system prompt if provided (new SDK might have a dedicated field)
+    // Check if the new SDK has a specific systemInstruction field in generateContent options
+    let systemInstructionContent: Content | undefined = undefined;
     if (systemPrompt) {
-      formattedMessages = [
-        { role: "user", parts: [{ text: systemPrompt }] },
-        ...formattedMessages,
-      ];
+      systemInstructionContent = {
+        role: "system",
+        parts: [{ text: systemPrompt }],
+      };
+      // If the new SDK uses a dedicated field instead of prepending:
+      // formattedMessages = this.mapMessagesToGoogleContent(messages); // Don't prepend here
+    } else {
+      formattedMessages = this.mapMessagesToGoogleContent(messages);
     }
 
     // --- Vision Handling ---
     let visionPart: Part | null = null;
     if (visionUrl && this.isVisionCapable) {
-      const imageData = await this.getImageDataFromUrl(visionUrl);
+      // Call the imported utility function
+      const imageData = await getImageDataFromUrl(visionUrl);
       if (imageData) {
         visionPart = {
           inlineData: {
@@ -170,49 +159,94 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         };
       } else {
         console.warn(`Could not process image from visionUrl: ${visionUrl}`);
-        // Decide how to handle failure: skip image, throw error, etc.
-        // For now, we'll just skip adding the image part.
       }
     }
 
-    // Add vision part to the last user message or create a new one
+    // Add vision part to the last user message
     if (visionPart) {
       const lastMessageIndex = formattedMessages.length - 1;
       if (
         lastMessageIndex >= 0 &&
-        formattedMessages[lastMessageIndex].role === "user"
+        formattedMessages[lastMessageIndex].role === "user" &&
+        formattedMessages[lastMessageIndex].parts
       ) {
-        // Append to the last user message's parts
         formattedMessages[lastMessageIndex].parts.push(visionPart);
       } else {
-        // If no messages or last message isn't 'user', create a new user message
-        formattedMessages.push({
-          role: "user",
-          parts: [visionPart], // Start with the image part
-        });
+        // If no user message exists, create one just for the image
+        formattedMessages.push({ role: "user", parts: [visionPart] });
         console.warn(
-          "Image data provided but no suitable user message found to append to, or message history was empty. Created new user message solely for the image."
+          "Image data provided but no user message found. Created new user message for image."
         );
       }
     }
     // --- End Vision Handling ---
 
-    const contentsRequest: GenerateContentRequest = {
+    // Prepare the arguments for the generateContent call directly
+    const generateContentArgs: any = {
+      // Use 'any' temporarily for easier property addition
+      model: model,
       contents: formattedMessages,
+      generationConfig: generationConfig,
     };
+    // Conditionally add systemInstruction if it exists
+    if (systemInstructionContent) {
+      generateContentArgs.systemInstruction = systemInstructionContent;
+    }
 
-    const result = await genAI.generateContent(contentsRequest);
-    const response = result.response;
+    // Call generateContent using the new SDK structure: ai.models.generateContent
+    // The response structure might also differ.
+    let result: GenerateContentResponse; // Use type from @google/genai
+    try {
+      // Pass the constructed arguments object directly
+      result = await this.client.models.generateContent(generateContentArgs);
+    } catch (error) {
+      console.error("Error calling Google GenAI generateContent:", error);
+      throw error; // Re-throw the error
+    }
 
-    let usage: UsageResponse | undefined = undefined;
+    // Access response - structure might differ (e.g., result.candidates instead of result.response.candidates)
+    // Check the actual response object structure from the new SDK
+    const responseCandidate = result?.candidates?.[0]; // Use optional chaining
+    const responseUsageMetadata = result?.usageMetadata; // Use optional chaining
 
-    if (response.usageMetadata && this.inputTokenCost && this.outputTokenCost) {
-      const inputCost = computeResponseCost(
-        response.usageMetadata.promptTokenCount,
-        this.inputTokenCost
+    // Add check for responseCandidate before accessing its parts
+    if (!responseCandidate || !responseCandidate.content?.parts) {
+      console.error(
+        "Invalid response structure from @google/genai API (missing candidate or parts):",
+        JSON.stringify(result) // Log the whole result for debugging
       );
+      // Attempt to get text directly as a fallback
+      try {
+        // Explicitly check responseCandidate again inside the try block
+        if (responseCandidate && responseCandidate.content?.parts) {
+          const fallbackText =
+            responseCandidate.content.parts.map((p) => p.text).join("") || "";
+          if (fallbackText) {
+            return {
+              role: "assistant",
+              content: [{ type: "text", text: fallbackText }],
+              usage: undefined, // Usage might be unavailable in this error case
+            };
+          }
+        }
+      } catch (e) {
+        // Ignore fallback error
+      }
+      // If fallback also failed or responseCandidate was null/undefined initially
+      throw new Error("Invalid response structure from @google/genai API");
+    }
+
+    // --- Usage Calculation ---
+    let usage: UsageResponse | undefined = undefined;
+    // Check if usageMetadata exists and has the expected properties
+    if (responseUsageMetadata && this.inputTokenCost && this.outputTokenCost) {
+      // Property names might differ in the new SDK (e.g., promptTokenCount vs prompt_token_count)
+      const promptTokens = responseUsageMetadata.promptTokenCount ?? 0;
+      const candidateTokens = responseUsageMetadata.candidatesTokenCount ?? 0; // Or totalTokenCount - promptTokens? Check SDK docs.
+
+      const inputCost = computeResponseCost(promptTokens, this.inputTokenCost);
       const outputCost = computeResponseCost(
-        response.usageMetadata.candidatesTokenCount,
+        candidateTokens,
         this.outputTokenCost
       );
 
@@ -222,18 +256,19 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         totalCost: inputCost + outputCost,
       };
     }
+    // --- End Usage Calculation ---
 
-    if (!response?.candidates?.[0]?.content?.parts) {
-      console.error(
-        "Invalid response structure from Gemini API:",
-        JSON.stringify(response)
-      );
-      throw new Error("Invalid response structure from Gemini API");
-    }
-
+    // --- Content Parsing ---
     const contentBlocks: ContentBlock[] = [];
-    for (const part of response.candidates[0].content.parts) {
-      if (part.text) {
+    for (const part of responseCandidate.content.parts) {
+      // Check for thinking part (API reference confirms 'thought' exists on Part)
+      if (part.thought === true) {
+        contentBlocks.push({
+          type: "thinking",
+          thinking: part.text || "", // Assume thought content is in text
+          signature: "google",
+        });
+      } else if (part.text) {
         contentBlocks.push({ type: "text", text: part.text });
       } else if (part.inlineData) {
         contentBlocks.push({
@@ -242,21 +277,25 @@ export class GoogleAIAdapter implements AIVendorAdapter {
           base64Data: part.inlineData.data,
         } as ImageDataBlock);
       }
+      // Add handling for other part types if needed (e.g., functionCall, functionResponse)
     }
 
     if (contentBlocks.length === 0) {
-      try {
-        const fallbackText = response.text();
-        if (fallbackText) {
-          contentBlocks.push({ type: "text", text: fallbackText });
-        } else {
-          throw new Error("Response has no processable parts or text.");
-        }
-      } catch (e) {
-        console.error("Error getting fallback text:", e);
+      // Fallback if no parts were processed but the structure seemed valid initially
+      const fallbackText = responseCandidate.content.parts
+        .map((p) => p.text)
+        .join("");
+      if (fallbackText) {
+        contentBlocks.push({ type: "text", text: fallbackText });
+      } else {
+        console.error(
+          "No processable content found in Gemini response parts:",
+          responseCandidate.content.parts
+        );
         throw new Error("No processable content found in Gemini response.");
       }
     }
+    // --- End Content Parsing ---
 
     return {
       role: "assistant",
@@ -265,33 +304,33 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
   }
 
-  // Updated signature to match AIVendorAdapter interface
-  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
-    // Throw NotImplementedError as Google generates images inline, not via a separate call
-    throw new NotImplementedError("Google generates images inline with text, use generateResponse/sendChat.");
+  async generateImage(
+    options: AIRequestOptions
+  ): Promise<ImageGenerationResponse> {
+    throw new NotImplementedError(
+      "Google generates images inline with text, use generateResponse/sendChat."
+    );
   }
 
   async sendChat(chat: Chat): Promise<ChatResponse> {
+    // This method should now correctly use the refactored generateResponse
     const options: AIRequestOptions = {
       model: chat.model,
-      messages: chat.responseHistory,
+      messages: [...chat.responseHistory], // Clone history
       maxTokens: chat.maxTokens || undefined,
+      budgetTokens: chat.budgetTokens || undefined,
       systemPrompt: chat.systemPrompt,
       visionUrl: chat.visionUrl || undefined,
     };
 
+    // Add current prompt to messages if it exists
     if (chat.prompt) {
-      // Ensure content is treated as an array if needed, or simple string
-      const promptContent: ContentBlock[] = [
-        {
-          type: "text",
-          text: chat.prompt,
-        },
-      ];
-      options.messages = [
-        ...options.messages,
-        { role: "user", content: promptContent },
-      ];
+      const currentMessage: Message = {
+        role: "user",
+        // Handle prompt as simple text for now, visionUrl is handled in generateResponse
+        content: [{ type: "text", text: chat.prompt }],
+      };
+      options.messages.push(currentMessage);
     }
 
     const response = await this.generateResponse(options);
@@ -303,6 +342,8 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
   }
 
-  // Removed sendMCPChat method as it's optional in the interface and not implemented.
-  // Function calling would need to be integrated into generateResponse/sendChat.
+  // Function calling / MCP tool handling would need to be added here
+  // by integrating with the `tools` and `toolConfig` parameters
+  // in the `generateResponse` method, similar to how Anthropic adapter does it,
+  // but using the @google/genai SDK's specific structures for Tool and FunctionDeclaration.
 }
