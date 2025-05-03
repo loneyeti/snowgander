@@ -1,49 +1,62 @@
-# Snowgander AI Vendor Abstraction Layer (`snowgander`)
+````markdown
+# Snowgander: AI Vendor Abstraction Layer
 
 [![npm version](https://badge.fury.io/js/snowgander.svg)](https://badge.fury.io/js/snowgander)
 
-This TypeScript library provides a robust, maintainable, and extensible abstraction layer over various AI vendor APIs (OpenAI, Anthropic, Google AI, OpenRouter). It allows consuming applications to interact with different AI models through a standardized interface, simplifying integration and vendor switching.
+---
 
-## Features
+**Check out Snowgoose!**
 
-- **Standardized Interface:** `AIVendorAdapter` defines a common contract for chat completion, image generation (where supported), and capability checks.
-- **Vendor Abstraction:** Hides vendor-specific SDK details behind a consistent API.
-- **Factory Pattern:** `AIVendorFactory` simplifies adapter creation based on vendor name and model configuration.
-- **Configuration Injection:** Allows API keys and other vendor settings to be injected via `AIVendorFactory.setVendorConfig`.
-- **Standardized Content:** Uses `ContentBlock[]` (`TextBlock`, `ImageBlock`, `ImageDataBlock`, `ThinkingBlock`, etc.) for consistent handling of diverse message content across vendors.
-- **Capability Reporting:** Adapters report model capabilities (`isVisionCapable`, `isImageGenerationCapable`, `isThinkingCapable`) based on configuration.
-- **Cost Calculation:** Provides utilities and standardized response fields (`UsageResponse`) for estimating interaction costs based on token usage.
-- **Type Safety:** Written in TypeScript with shared type definitions.
+Snowgander is the core abstraction engine powering [**Snowgoose**](https://snowgoose.app), an intelligent agent framework.
 
-## Current Limitations & Design Notes
+If you're building AI-powered applications, agents, or workflows, **Snowgoose** provides the tools and structure you need on top of Snowgander.
 
-- **MCP Tool Handling:** Tool usage is now integrated into the `sendChat` method for supported vendors (e.g., Anthropic).
-  - The consuming application provides available tools via the `mcpAvailableTools` field in the `Chat` object (using the `MCPAvailableTool` type from `src/types.ts`).
-  - The adapter formats these tools for the vendor's API.
-  - The vendor API may respond with `ToolUseBlock` content, indicating a tool call request.
-  - **Crucially, the responsibility for _executing_ the requested tool and sending back a `ToolResultBlock` in a subsequent message still lies with the consuming application.** The adapters facilitate the communication but do not execute external tools.
-  - Support varies by vendor (Anthropic supports it; check other adapters). The legacy `sendMCPChat` method is deprecated/removed.
-- **Inconsistent Multimodal Support:** Handling of image inputs varies between adapters. URL-based images (`ImageBlock`) are generally not automatically processed by adapters; base64-encoded images (`ImageDataBlock`) have better support but may require pre-processing by the consuming application for some vendors (e.g., Google). Check specific adapter capabilities.
-- **Limited Image Generation:** Currently, only the OpenAI adapter supports image generation (`generateImage`). This is planned to be integrated into `sendChat` in the future.
+**Explore the Snowgoose App:** [**snowgoose.app**](https://snowgoose.app)
+**Check out the Snowgoose Repo:** [**github.com/loneyeti/snowgoose**](https://github.com/loneyeti/snowgoose)
 
-## Installation
+---
+
+## What is Snowgander?
+
+Snowgander is a TypeScript library that makes it easy to talk to different AI models (like those from OpenAI, Anthropic, Google, OpenRouter) using one simple, consistent interface.
+
+Stop writing vendor-specific code! Use Snowgander to:
+
+- Easily switch between AI models and vendors.
+- Use a single method (`sendChat`) for most interactions.
+- Handle different types of content (text, images, tool use, thinking steps) uniformly.
+
+## How to Use It: The Basics
+
+Using Snowgander involves these simple steps:
+
+1.  **Configure API Keys:** Tell the factory your API keys.
+2.  **Get an Adapter:** Ask the factory for an adapter for the specific model you want.
+3.  **Send a Chat:** Use the adapter's `sendChat` method, passing the conversation state.
+4.  **Get the Response:** Receive a standardized response containing the AI's message and usage info.
+
+### 1. Installation
 
 ```bash
 npm install snowgander
 ```
+````
 
-## Configuration
+### 2. Configuration (Set API Keys)
 
-Before using the factory, configure the necessary API keys for each vendor you intend to use. This should typically happen once during application startup.
+Do this once when your application starts.
 
 ```typescript
 import { AIVendorFactory } from "snowgander";
 
-// Example configuration (likely done in a central setup file)
+// Example: Load keys from environment variables
 if (process.env.OPENAI_API_KEY) {
   AIVendorFactory.setVendorConfig("openai", {
     apiKey: process.env.OPENAI_API_KEY,
-    organizationId: process.env.OPENAI_ORG_ID, // Optional
+  });
+  // Also configure 'openai-image' if using DALL-E via OpenAIImageAdapter
+  AIVendorFactory.setVendorConfig("openai-image", {
+    apiKey: process.env.OPENAI_API_KEY,
   });
 }
 
@@ -60,202 +73,167 @@ if (process.env.GOOGLE_API_KEY) {
 }
 
 if (process.env.OPENROUTER_API_KEY) {
-  // OpenRouter uses OpenAI's SDK structure but needs its own config
   AIVendorFactory.setVendorConfig("openrouter", {
     apiKey: process.env.OPENROUTER_API_KEY,
-    // OpenRouter might require specific headers like 'HTTP-Referer' or 'X-Title'
-    // Pass them via optionalHeaders if needed by your application context
-    // optionalHeaders: { 'HTTP-Referer': 'YourAppUrl', 'X-Title': 'YourAppTitle' }
   });
+}
+
+// Add other vendors as needed...
+```
+
+### 3. How to Initiate an Adapter
+
+To get an adapter, you need:
+
+- The **vendor name** (e.g., `"openai"`, `"anthropic"`).
+- A **`ModelConfig` object** describing the model. This usually comes from your application's settings or database.
+
+```typescript
+import {
+  AIVendorFactory,
+  ModelConfig, // Describes the specific model
+  AIVendorAdapter, // The type for the adapter instance
+} from "snowgander";
+
+// --- Prepare ModelConfig (Example) ---
+// In a real app, you'd likely fetch this dynamically
+const gpt4oConfig: ModelConfig = {
+  apiName: "gpt-4o", // The name the vendor API expects
+  isVision: true,
+  isImageGeneration: false,
+  isThinking: false, // Does it support structured thinking output?
+  inputTokenCost: 10, // Cost per million input tokens (optional)
+  outputTokenCost: 30, // Cost per million output tokens (optional)
+};
+
+// --- Get the Adapter ---
+try {
+  const vendorName = "openai"; // Or "anthropic", "google", etc.
+  const adapter: AIVendorAdapter = AIVendorFactory.getAdapter(
+    vendorName,
+    gpt4oConfig // Pass the config for the specific model
+  );
+
+  console.log(
+    `Successfully got adapter for ${vendorName} / ${gpt4TurboConfig.apiName}`
+  );
+  // Now you can use the 'adapter' instance!
+} catch (error) {
+  console.error("Failed to get adapter:", error);
 }
 ```
 
-## Usage
+### 4. How to Send a Chat
 
-The primary interaction points for a consuming application are:
+The main way to interact is using the adapter's `sendChat` method. You pass it a `Chat` object which holds the entire conversation state.
 
-1.  **`AIVendorFactory`:** Used to configure vendor API keys (`setVendorConfig`) and retrieve adapter instances (`getAdapter`).
-2.  **`ModelConfig`:** An object defining the specific model's capabilities, API name, and costs. This is typically fetched dynamically and passed to the factory.
-3.  **`sendChat`:** The main method on the retrieved adapter for conducting chat conversations.
+```typescript
+import { Chat, ChatResponse, TextBlock } from "snowgander";
 
-**Note:** While methods like `generateResponse`, `generateImage`, and `sendMCPChat` exist, the long-term goal is to consolidate most common interactions (including image generation and tool use) into the `sendChat` method for a simpler, unified interface.
+// Assume 'adapter' is the AIVendorAdapter instance obtained above
 
-Here's a typical workflow:
+// --- Prepare the Chat Object (Manage this state in your app) ---
+let currentChat: Chat = {
+  model: gpt4oConfig.apiName, // The model being used
+  responseHistory: [
+    // Load previous messages here...
+    // Example:
+    // { role: 'user', content: [{ type: 'text', text: 'Hi there!' }] },
+    // { role: 'assistant', content: [{ type: 'text', text: 'Hello! How can I help?' }] }
+  ],
+  prompt: "Tell me a short joke about computers.", // The user's latest input
 
-1.  **Import:** Import the factory and necessary types.
+  // Optional fields:
+  systemPrompt: "You are a witty comedian.", // Sets the AI's persona
+  maxTokens: 100, // Limit response length for this turn
+  visionUrl: null, // Set to an image URL for vision models
+  budgetTokens: null, // Set > 0 to enable 'thinking' mode if supported
+  // Add openaiImageGenerationOptions or openaiImageEditOptions here for image models
+};
 
-    ```typescript
-    import {
-      AIVendorFactory,
-      ModelConfig,
-      Chat, // Represents the conversation history
-      ChatResponse, // The result from sendChat
-      AIVendorAdapter,
-      // Other types like ContentBlock, TextBlock, ImageDataBlock as needed
-    } from "snowgander";
-    ```
+// --- Send the Chat ---
+async function makeApiCall() {
+  try {
+    console.log("Sending chat to AI...");
+    const response: ChatResponse = await adapter.sendChat(currentChat);
 
-2.  **Prepare `ModelConfig`:** Create a `ModelConfig` object (e.g., fetched from a database).
+    console.log("AI Response Received!");
 
-    ```typescript
-    // Example: Fetch model details first
-    // const modelData = await getModelDetailsFromDB('gpt-4-turbo');
-    const modelConfig: ModelConfig = {
-      apiName: modelData.apiName, // e.g., "gpt-4-turbo"
-      isVisionCapable: modelData.isVision,
-      isImageGenerationCapable: modelData.isImageGeneration,
-      isThinkingCapable: modelData.isThinking,
-      inputTokenCost: modelData.inputTokenCost ?? undefined, // Cost per 1m tokens
-      outputTokenCost: modelData.outputTokenCost ?? undefined, // Cost per 1m tokens
-    };
-    ```
+    // --- Process the Response (See Step 5 below) ---
+    // IMPORTANT: Update your chat state for the next turn
+    currentChat.responseHistory.push(response); // Add the AI's response to history
+    currentChat.prompt = ""; // Clear the prompt, ready for next user input
 
-3.  **Get Adapter:** Use the factory to get the appropriate adapter instance.
+    // Display or use the response content
+    const assistantMessage = response.content
+      .filter((block): block is TextBlock => block.type === "text") // Get only text blocks
+      .map((block) => block.text)
+      .join("\n"); // Join if there are multiple text blocks
 
-    ```typescript
-    // Example: Fetch vendor name first
-    // const vendorName = modelData.vendorName; // e.g., "openai"
-    const adapter: AIVendorAdapter = AIVendorFactory.getAdapter(
-      vendorName,
-      modelConfig
-    );
-    ```
+    console.log("Assistant:", assistantMessage);
 
-4.  **Use `sendChat`:** Manage conversation state and interact with the model using the `Chat` object.
-
-    ```typescript
-    // Example Chat object structure (manage this in your application state)
-    // Populate fields based on your application's context (user, settings, history)
-    let chat: Chat = {
-      // --- Core Identifiers ---
-      model: modelConfig.apiName, // From the ModelConfig prepared earlier
-
-      // --- Conversation State ---
-      responseHistory: [
-        // Previous turns in the conversation would be loaded here
-        // Example:
-        // { role: 'user', content: [{ type: 'text', text: 'Previous question...' }], usage: {...} },
-        // { role: 'assistant', content: [{ type: 'text', text: 'Previous answer...' }], usage: {...} }
-      ],
-      prompt: "Hello! What can you do?", // The current user input
-
-      // --- Optional Parameters & Inputs ---
-      systemPrompt: "You are a helpful assistant.", // System prompt (if applicable)
-      visionUrl: null, // Set to image URL if providing vision input
-      imageURL: null, // Set to image URL (potentially for display?)
-      maxTokens: 150, // Optional: Max tokens for this specific turn
-      budgetTokens: null, // Optional: Token budget for thinking mode
-      mcpAvailableTools: [], // Optional: Tools available for the model to use
-    };
-
-    // --- Example: Providing Available Tools (for vendors like Anthropic) ---
-    // if (adapterSupportsTools) { // Check if the adapter/model supports tools
-    //   chat.mcpAvailableTools = [
-    //     {
-    //       name: "get_weather",
-    //       description: "Get the current weather for a location",
-    //       input_schema: JSON.stringify({ // Schema must be a JSON string
-    //         type: "object",
-    //         properties: { location: { type: "string" } },
-    //         required: ["location"],
-    //       }),
-    //     },
-    //     // ... other tools
-    //   ];
-    // }
-
-    // Add image data if needed (using visionUrl or potentially modifying prompt/history)
-    // if (modelConfig.isVisionCapable && imageBase64Data) {
-    //   // Adapters might expect vision input differently (e.g., via visionUrl,
-    //   // or potentially as an ImageDataBlock within the prompt/history - check adapter specifics)
-    //   // Example using visionUrl (if adapter supports it):
-    //   // chat.visionUrl = `data:image/png;base64,${imageBase64Data}`;
-    // }
-
-    try {
-      // Send the Chat object to the adapter
-      // The second argument allows overriding parameters like temperature for this specific call
-      const chatResponse: ChatResponse = await adapter.sendChat(chat, {
-        temperature: 0.8, // Example override
-      });
-
-      // IMPORTANT: Update your application's chat state with the response
-      // Add chatResponse to chat.responseHistory for the next turn
-      chat.responseHistory.push(chatResponse);
-      // Clear the prompt for the next user input, etc.
-      chat.prompt = "";
-
-      console.log(
-        "Assistant Response:",
-        JSON.stringify(chatResponse.content, null, 2) // Note: chatResponse itself is the message
-      );
-
-      // --- Example: Handling Tool Use Requests ---
-      // Check if the response contains a tool use request
-      const toolUseBlock = chatResponse.content.find(
-        (block): block is ToolUseBlock => block.type === "tool_use"
-      );
-
-      if (toolUseBlock) {
-        console.log(`Tool Use Requested: ${toolUseBlock.name}`);
-        console.log(`Input: ${toolUseBlock.input}`); // Input is a stringified JSON
-
-        // --- !!! APPLICATION LOGIC REQUIRED HERE !!! ---
-        // 1. Parse toolUseBlock.input
-        // 2. Execute the corresponding tool (e.g., call your get_weather function)
-        // 3. Construct a ToolResultBlock with the output
-        // 4. Add a new message to chat.responseHistory containing the ToolResultBlock
-        // 5. Call adapter.sendChat() again with the updated history to get the final response
-        // Example (Conceptual):
-        // const toolResult = await executeMyTool(toolUseBlock.name, JSON.parse(toolUseBlock.input));
-        // const resultBlock: ToolResultBlock = {
-        //   type: 'tool_result',
-        //   toolUseId: ???, // Anthropic doesn't seem to use ID here, map based on request
-        //   content: [{ type: 'text', text: JSON.stringify(toolResult) }]
-        // };
-        // chat.responseHistory.push({ role: 'user', content: [resultBlock] }); // Role might depend on API spec
-        // const finalResponse = await adapter.sendChat(chat);
-        // console.log("Final Assistant Response after Tool Use:", finalResponse.content);
-        // --- !!! END APPLICATION LOGIC !!! ---
-      }
-      if (chatResponse.usage) {
-        console.log("Total Cost:", chatResponse.usage.totalCost);
-        console.log("Input Cost:", chatResponse.usage.inputCost);
-        console.log("Output Cost:", chatResponse.usage.outputCost);
-      }
-    } catch (error) {
-      console.error("Error sending chat:", error);
+    if (response.usage) {
+      console.log(`Cost: $${response.usage.totalCost.toFixed(6)}`);
     }
+  } catch (error) {
+    console.error("Error sending chat:", error);
+    // Handle errors appropriately (e.g., show message to user)
+  }
+}
 
-    // --- Example: Image Generation (Current Method) ---
-    // Note: This functionality is planned to be integrated into sendChat in the future.
-    if (adapter.isImageGenerationCapable()) {
-      const imagePrompt = "A cute cat wearing sunglasses";
-      try {
-        // The OpenAI adapter currently takes a simple prompt string.
-        // Other adapters might require different parameters or not support it.
-        const imageUrl: string = await adapter.generateImage(imagePrompt); // Returns data URI or URL
-        console.log("Generated Image URL/Data:", imageUrl);
-        // You might add this image URL/data as a message in your chat history
-      } catch (error) {
-        console.error("Error generating image:", error);
-      }
-    } else {
-      console.log(
-        `Model ${modelConfig.apiName} does not support image generation.`
-      );
-    }
-    ```
+makeApiCall();
+```
+
+### 5. What to Expect in Return (`ChatResponse`)
+
+The `sendChat` method returns a `ChatResponse` object with this structure:
+
+```typescript
+interface ChatResponse {
+  role: string; // Usually "assistant" (or "error" if something went wrong)
+  content: ContentBlock[]; // An array containing the AI's response parts
+  usage?: {
+    // Optional cost information
+    inputCost: number;
+    outputCost: number;
+    totalCost: number;
+  };
+}
+```
+
+- **`role`**: Identifies the sender (usually `"assistant"`).
+- **`content`**: This is an array (`ContentBlock[]`). Each item in the array represents a part of the response. Common types include:
+  - `TextBlock`: Contains plain text (`{ type: 'text', text: '...' }`).
+  - `ImageDataBlock`: Contains image data (`{ type: 'image_data', mimeType: '...', base64Data: '...' }`).
+  - `ThinkingBlock`: Contains structured thinking steps if requested (`{ type: 'thinking', thinking: '...', signature: '...' }`).
+  - `ToolUseBlock`: Indicates the AI wants to use a tool (`{ type: 'tool_use', name: '...', input: '...' }`). Your application needs to handle this.
+  - `ErrorBlock`: If an error occurred during processing (`{ type: 'error', publicMessage: '...', privateMessage: '...' }`).
+- **`usage`**: If available, provides the estimated cost for the interaction based on token counts.
+
+**Your application needs to:**
+
+1.  Check the `role` (e.g., handle `"error"`).
+2.  Iterate through the `content` array to process and display the different blocks appropriately (e.g., render text, display images, trigger tool execution).
+3.  **Crucially, add the entire `ChatResponse` object to your `responseHistory`** so the AI has context for the next turn.
 
 ## Development
 
-- **Build:** Run `npm run build` to compile TypeScript to JavaScript in the `dist/` folder.
-- **Testing:** Run `npm test` to execute tests using Jest.
+- **Build:** `npm run build` (Compiles TS to `dist/`)
+- **Test:** `npm test` (Runs Jest tests)
 
-## Exports
+---
 
-- `AIVendorFactory`: Class for creating adapter instances.
-- Types:
-  - Core: `AIVendorAdapter`, `AIRequestOptions`, `AIResponse`, `VendorConfig`, `ModelConfig`, `Chat`, `ChatResponse`, `Message`, `UsageResponse`
-  - Content Blocks: `ContentBlock`, `ThinkingBlock`, `RedactedThinkingBlock`, `TextBlock`, `ImageBlock`, `ImageDataBlock`, `ToolUseBlock`, `ToolResultBlock`
-  - Tools: `MCPAvailableTool` (Note: `MCPTool` might be deprecated or internal)
+**Ready to build more complex AI agents?**
+
+Snowgander provides the vendor abstraction. [**Snowgoose**](https://snowgoose.app) provides the framework.
+
+Give your AI projects structure and power with Snowgoose!
+
+**Explore the Snowgoose App:** [**snowgoose.app**](https://snowgoose.app)
+**Check out the Snowgoose Repo:** [**github.com/loneyeti/snowgoose**](https://github.com/loneyeti/snowgoose)
+
+---
+
+```
+
+```
