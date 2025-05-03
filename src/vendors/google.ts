@@ -6,7 +6,8 @@ import {
   Content,
   Part,
   GenerateContentResponse, // Assuming this type exists
-  UsageMetadata, // Assuming this type exists
+  UsageMetadata,
+  Modality, // Assuming this type exists
   // Add other necessary types like FunctionDeclaration, Tool, etc. if needed later
 } from "@google/genai"; // Updated import
 import {
@@ -193,6 +194,14 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     // Conditionally add systemInstruction if it exists
     if (systemInstructionContent) {
       generateContentArgs.systemInstruction = systemInstructionContent;
+    }
+
+    // This is the new way that GenAI handles modalities. Old way left
+    // for compatibility
+    if (this.isImageGenerationCapable) {
+      generateContentArgs.config = {
+        responseModalities: [Modality.TEXT, Modality.IMAGE], // <-- Use Modality enum
+      };
     }
 
     // Call generateContent using the new SDK structure: ai.models.generateContent
