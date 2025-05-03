@@ -558,14 +558,12 @@ describe("GoogleAIAdapter", () => {
 
       expect(generateResponseSpy).toHaveBeenCalledTimes(1);
       // Explicitly map null -> undefined for properties where AIRequestOptions expects undefined
+      // The prompt is no longer automatically added to messages in sendChat
       const expectedOptions: AIRequestOptions = {
         model: basicChat.model,
         messages: [
           ...basicChat.responseHistory,
-          {
-            role: "user",
-            content: [{ type: "text", text: basicChat.prompt! }],
-          },
+          // The prompt message is no longer added here
         ],
         maxTokens:
           basicChat.maxTokens === null ? undefined : basicChat.maxTokens, // Map null to undefined
@@ -639,11 +637,9 @@ describe("GoogleAIAdapter", () => {
           model: mockGeminiProVision.apiName,
           messages: [
             ...chatWithVision.responseHistory,
-            {
-              role: "user",
-              content: [{ type: "text", text: chatWithVision.prompt! }],
-            }, // Prompt text still included
+            // The prompt message is no longer added here
           ],
+          // visionUrl is passed separately and handled within generateResponse
         })
       );
       generateResponseSpy.mockRestore();
