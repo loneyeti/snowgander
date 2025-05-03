@@ -1,4 +1,3 @@
-````markdown
 # Snowgander: AI Vendor Abstraction Layer
 
 [![npm version](https://badge.fury.io/js/snowgander.svg)](https://badge.fury.io/js/snowgander)
@@ -40,7 +39,6 @@ Using Snowgander involves these simple steps:
 ```bash
 npm install snowgander
 ```
-````
 
 ### 2. Configuration (Set API Keys)
 
@@ -231,9 +229,3 @@ Give your AI projects structure and power with Snowgoose!
 
 **Explore the Snowgoose App:** [**snowgoose.app**](https://snowgoose.app)
 **Check out the Snowgoose Repo:** [**github.com/loneyeti/snowgoose**](https://github.com/loneyeti/snowgoose)
-
----
-
-```
-
-```
