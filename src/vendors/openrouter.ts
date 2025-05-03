@@ -264,7 +264,9 @@ export class OpenRouterAdapter implements AIVendorAdapter {
   }
 
   // Updated signature to match AIVendorAdapter interface
-  async generateImage(options: AIRequestOptions): Promise<ImageGenerationResponse> {
+  async generateImage(
+    options: AIRequestOptions
+  ): Promise<ImageGenerationResponse> {
     // Throw NotImplementedError as OpenRouter routes requests and doesn't generate images directly
     throw new NotImplementedError(
       "Image generation not directly supported by OpenRouter adapter. Use a specific image generation model/vendor."
@@ -292,9 +294,11 @@ export class OpenRouterAdapter implements AIVendorAdapter {
         `Vision URL provided for non-vision capable OpenRouter model '${chat.model}'. Ignoring image.`
       );
     }
+    /*
     if (chat.prompt) {
       currentUserContent.push({ type: "text", text: chat.prompt });
     }
+      */
 
     // Add the current user message to the options if it has content
     if (currentUserContent.length > 0) {

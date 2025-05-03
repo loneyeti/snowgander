@@ -326,6 +326,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
 
     // Add current prompt to messages if it exists
+    /*
     if (chat.prompt) {
       const currentMessage: Message = {
         role: "user",
@@ -334,6 +335,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       };
       options.messages.push(currentMessage);
     }
+      */
 
     const response = await this.generateResponse(options);
 
