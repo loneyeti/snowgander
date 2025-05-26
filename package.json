@@ -1,6 +1,6 @@
 {
   "name": "snowgander",
-  "version": "0.0.36",
+  "version": "0.0.37",
   "description": "Universal interface for disperate AI vendors",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

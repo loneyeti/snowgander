@@ -16,6 +16,7 @@ export type {
   TextBlock,
   ImageBlock,
   ImageDataBlock,
+  ErrorBlock,
   ToolResultBlock,
   ToolUseBlock,
   MCPAvailableTool,
