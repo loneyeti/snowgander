@@ -264,6 +264,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
         inputCost: inputCost,
         outputCost: outputCost,
         webSearchCost: webSearchCost > 0 ? webSearchCost : undefined,
+        didGenerateImage: didGenerateImage,
+        didWebSearch: didUseWebSearch,
         totalCost: inputCost + outputCost + webSearchCost,
       };
     }

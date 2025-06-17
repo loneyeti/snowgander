@@ -124,6 +124,8 @@ export interface UsageResponse {
   inputCost: number;
   outputCost: number;
   webSearchCost?: number; // New: The flat fee for web search, if applied
+  didGenerateImage?: boolean;
+  didWebSearch?: boolean;
   totalCost: number;
 }
 
