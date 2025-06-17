@@ -55,6 +55,86 @@ describe("OpenAIAdapter", () => {
     inputTokenCost: 10 / 1_000_000,
     outputTokenCost: 30 / 1_000_000,
   };
+
+  const mockFullCostModel: ModelConfig = {
+    apiName: "gpt-4-turbo-plus",
+    isVision: true,
+    isImageGeneration: true, // Assuming this model can do it all
+    isThinking: false,
+    inputTokenCost: 10 / 1_000_000,
+    outputTokenCost: 30 / 1_000_000,
+    imageOutputTokenCost: 100 / 1_000_000, // New cost
+    webSearchCost: 0.05, // New flat fee
+  };
+
+  const mockApiResponseWithImage = {
+    id: "resp-img-gen",
+    model: mockFullCostModel.apiName,
+    output_text: "Here is the image you requested.",
+    output: [
+      {
+        type: "image_generation_call",
+        id: "ig_123",
+        status: "completed",
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: "Here is the image you requested." },
+        ],
+      },
+    ],
+    usage: { input_tokens: 50, output_tokens: 100 },
+  };
+
+  const mockApiResponseWithWebSearch = {
+    id: "resp-web-search",
+    model: mockFullCostModel.apiName,
+    output_text: "According to my search...",
+    output: [
+      {
+        type: "web_search_call",
+        id: "ws_123",
+        status: "completed",
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "According to my search..." }],
+      },
+    ],
+    usage: { input_tokens: 20, output_tokens: 150 },
+  };
+
+  const mockApiResponseWithBoth = {
+    id: "resp-both",
+    model: mockFullCostModel.apiName,
+    output_text: "I searched the web to create this image.",
+    output: [
+      {
+        type: "web_search_call",
+        id: "ws_456",
+        status: "completed",
+      },
+      {
+        type: "image_generation_call",
+        id: "ig_789",
+        status: "completed",
+      },
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: "I searched the web to create this image.",
+          },
+        ],
+      },
+    ],
+    usage: { input_tokens: 70, output_tokens: 120 },
+  };
   // Removed mockDalleModel as generateImage is removed
 
   beforeEach(() => {
@@ -355,6 +435,83 @@ describe("OpenAIAdapter", () => {
       await expect(adapter.generateResponse(basicOptions)).rejects.toThrow(
         apiError
       );
+    });
+
+    it("should use imageOutputTokenCost when an image is generated", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockApiResponseWithImage);
+      const fullCostAdapter = new OpenAIAdapter(mockConfig, mockFullCostModel);
+
+      const response = await fullCostAdapter.generateResponse(basicOptions);
+
+      const expectedInputCost = computeResponseCost(
+        50,
+        mockFullCostModel.inputTokenCost!
+      );
+      // Crucially, this uses the special image cost
+      const expectedOutputCost = computeResponseCost(
+        100,
+        mockFullCostModel.imageOutputTokenCost!
+      );
+      const expectedTotalCost = expectedInputCost + expectedOutputCost;
+
+      expect(response.usage).toBeDefined();
+      expect(response.usage?.inputCost).toBeCloseTo(expectedInputCost);
+      expect(response.usage?.outputCost).toBeCloseTo(expectedOutputCost);
+      expect(response.usage?.webSearchCost).toBeUndefined();
+      expect(response.usage?.totalCost).toBeCloseTo(expectedTotalCost);
+    });
+
+    it("should add webSearchCost when the web search tool is used", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockApiResponseWithWebSearch);
+      const fullCostAdapter = new OpenAIAdapter(mockConfig, mockFullCostModel);
+
+      const response = await fullCostAdapter.generateResponse(basicOptions);
+
+      const expectedInputCost = computeResponseCost(
+        20,
+        mockFullCostModel.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        150,
+        mockFullCostModel.outputTokenCost!
+      );
+      const expectedWebSearchCost = mockFullCostModel.webSearchCost!;
+      const expectedTotalCost =
+        expectedInputCost + expectedOutputCost + expectedWebSearchCost;
+
+      expect(response.usage).toBeDefined();
+      expect(response.usage?.inputCost).toBeCloseTo(expectedInputCost);
+      expect(response.usage?.outputCost).toBeCloseTo(expectedOutputCost);
+      expect(response.usage?.webSearchCost).toBe(expectedWebSearchCost);
+      expect(response.usage?.totalCost).toBeCloseTo(expectedTotalCost);
+    });
+
+    it("should apply both imageOutputTokenCost and webSearchCost when both tools are used", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockApiResponseWithBoth);
+      const fullCostAdapter = new OpenAIAdapter(mockConfig, mockFullCostModel);
+
+      const response = await fullCostAdapter.generateResponse(basicOptions);
+
+      const expectedInputCost = computeResponseCost(
+        70,
+        mockFullCostModel.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        120,
+        mockFullCostModel.imageOutputTokenCost!
+      ); // Image cost applies
+      const expectedWebSearchCost = mockFullCostModel.webSearchCost!;
+      const expectedTotalCost =
+        expectedInputCost + expectedOutputCost + expectedWebSearchCost;
+
+      expect(response.usage).toBeDefined();
+      expect(response.usage?.inputCost).toBeCloseTo(expectedInputCost);
+      expect(response.usage?.outputCost).toBeCloseTo(expectedOutputCost);
+      expect(response.usage?.webSearchCost).toBe(expectedWebSearchCost);
+      expect(response.usage?.totalCost).toBeCloseTo(expectedTotalCost);
     });
 
     it("should throw error if no content is received", async () => {

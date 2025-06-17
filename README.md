@@ -98,10 +98,12 @@ import {
 const gpt4oConfig: ModelConfig = {
   apiName: "gpt-4o", // The name the vendor API expects
   isVision: true,
-  isImageGeneration: false,
+  isImageGeneration: true, // This model can generate images
   isThinking: false, // Does it support structured thinking output?
-  inputTokenCost: 10, // Cost per million input tokens (optional)
-  outputTokenCost: 30, // Cost per million output tokens (optional)
+  inputTokenCost: 5, // Cost per million input tokens (optional)
+  outputTokenCost: 15, // Cost per million output tokens (optional)
+  imageOutputTokenCost: 20, // Special cost for image generation output tokens
+  webSearchCost: 0.05, // Flat fee when the web search tool is used
 };
 
 // --- Get the Adapter ---

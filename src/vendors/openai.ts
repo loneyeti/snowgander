@@ -38,6 +38,7 @@ type OpenAIMessageInput = {
 
 export class OpenAIAdapter implements AIVendorAdapter {
   private client: OpenAI;
+  private modelConfig: ModelConfig;
   public isVisionCapable: boolean;
   public isImageGenerationCapable: boolean;
   public isThinkingCapable: boolean;
@@ -45,6 +46,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
   public outputTokenCost?: number | undefined;
 
   constructor(config: VendorConfig, modelConfig: ModelConfig) {
+    this.modelConfig = modelConfig;
     this.client = new OpenAI({
       apiKey: config.apiKey,
       organization: config.organizationId,
@@ -85,7 +87,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const { model, messages, systemPrompt } = options;
+    const { model, messages, systemPrompt, tools, store } = options;
+    // Flags to track tool usage from the response
+    let didGenerateImage = false;
+    let didUseWebSearch = false;
 
     // Map internal Message format to OpenAI's responses.create input format
     // Use our custom types that reflect the expected API structure.
@@ -212,12 +217,24 @@ export class OpenAIAdapter implements AIVendorAdapter {
       instructions: systemPrompt,
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: apiInput as any,
+      tools: tools,
+      store: store,
       // Use spread syntax to add the reasoning parameter if it exists.
-      // We cast to `any` because the `reasoning` property may not be in the
-      // official SDK types yet, but the API supports it.
       ...(reasoningParam as any),
-      // max_tokens and temperature are not direct params for this specific API endpoint
     });
+
+    // Check for tool usage in the response
+    if (response.output && response.output.length > 0) {
+      for (const outputItem of response.output) {
+        if (outputItem.type === "image_generation_call") {
+          didGenerateImage = true;
+        }
+        if (outputItem.type === "web_search_call") {
+          didUseWebSearch = true;
+        }
+      }
+    }
+
     let usage: UsageResponse | undefined = undefined; // Initialize usage
 
     if (response.usage && this.inputTokenCost && this.outputTokenCost) {
@@ -225,14 +242,29 @@ export class OpenAIAdapter implements AIVendorAdapter {
         response.usage.input_tokens,
         this.inputTokenCost
       );
+
+      // Determine which output cost to use
+      const outputCostPerToken =
+        didGenerateImage && this.modelConfig.imageOutputTokenCost
+          ? this.modelConfig.imageOutputTokenCost
+          : this.outputTokenCost;
+
       const outputCost = computeResponseCost(
         response.usage.output_tokens,
-        this.outputTokenCost
+        outputCostPerToken
       );
+
+      // Check for web search flat fee
+      const webSearchCost =
+        didUseWebSearch && this.modelConfig.webSearchCost
+          ? this.modelConfig.webSearchCost
+          : 0;
+
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
-        totalCost: inputCost + outputCost,
+        webSearchCost: webSearchCost > 0 ? webSearchCost : undefined,
+        totalCost: inputCost + outputCost + webSearchCost,
       };
     }
 
@@ -279,7 +311,21 @@ export class OpenAIAdapter implements AIVendorAdapter {
     if (extractedText) {
       responseBlock.push({ type: "text", text: extractedText });
     }
-    // TODO: Add mapping for other output types (e.g., tool calls) if necessary
+
+    // Handle image generation output if tools were used
+    if (tools?.some((tool) => tool.type === "image_generation")) {
+      const imageGenerationOutput = response.output
+        .filter((output) => (output as any).type === "image_generation_call")
+        .filter((output) => typeof (output as any).result === "string");
+
+      for (const imageCall of imageGenerationOutput) {
+        responseBlock.push({
+          type: "image_data",
+          mimeType: "image/png", // Assuming PNG
+          base64Data: (imageCall as any).result,
+        });
+      }
+    }
 
     return {
       role: "assistant",
@@ -360,4 +406,112 @@ export class OpenAIAdapter implements AIVendorAdapter {
   // for this specific API endpoint (client.responses.create).
   // Tool handling would need to be integrated into generateResponse/sendChat
   // if using the chat completions endpoint in the future.
+
+  async *streamResponse(
+    options: AIRequestOptions
+  ): AsyncGenerator<ContentBlock, void, unknown> {
+    const { model, messages, systemPrompt, tools, store } = options;
+
+    // Map messages to API input format (same as generateResponse)
+    const apiInput: OpenAIMessageInput[] = messages
+      .map((msg): OpenAIMessageInput | null => {
+        let role: "user" | "assistant" | "developer";
+        switch (msg.role) {
+          case "user":
+          case "assistant":
+            role = msg.role;
+            break;
+          case "system":
+            console.warn(
+              "System role message found; use 'systemPrompt' instead"
+            );
+            return null;
+          default:
+            console.warn(`Unsupported role '${msg.role}' mapped to 'user'`);
+            role = "user";
+        }
+
+        if (!Array.isArray(msg.content)) {
+          console.warn(`Message content is not an array for role '${role}'`);
+          return null;
+        }
+
+        const apiContentParts = msg.content
+          .map((block): OpenAIMessageContentPart | null => {
+            if (block.type === "text") {
+              return {
+                type: role === "assistant" ? "output_text" : "input_text",
+                text: block.text,
+              };
+            } else if (
+              (block.type === "image" || block.type === "image_data") &&
+              this.isVisionCapable &&
+              role === "user"
+            ) {
+              return {
+                type: "input_image",
+                image_url:
+                  block.type === "image"
+                    ? block.url
+                    : `data:${block.mimeType};base64,${block.base64Data}`,
+              };
+            }
+            return null;
+          })
+          .filter((part): part is OpenAIMessageContentPart => part !== null);
+
+        return apiContentParts.length > 0
+          ? { role, content: apiContentParts }
+          : null;
+      })
+      .filter((msg): msg is OpenAIMessageInput => msg !== null);
+
+    if (apiInput.length === 0) {
+      throw new Error("No valid messages for OpenAI streaming request");
+    }
+
+    const reasoningParam = this.getReasoningParam(options.budgetTokens);
+
+    // Create streaming response and handle it properly
+    const streamResponse = await this.client.responses.create({
+      model,
+      instructions: systemPrompt,
+      input: apiInput as any,
+      tools,
+      store,
+      stream: true,
+      ...(reasoningParam as any),
+    });
+
+    // Use a type-safe approach to iterate through the stream
+    const iterableStream = streamResponse as unknown as AsyncIterable<{
+      output_text_delta?: string;
+      tool_calls?: Array<{
+        type: string;
+        result?: string;
+      }>;
+    }>;
+
+    for await (const event of iterableStream) {
+      // Handle text delta events
+      if (event.output_text_delta) {
+        yield {
+          type: "text",
+          text: event.output_text_delta,
+        };
+      }
+      // Handle tool call events if needed
+      if (event.tool_calls) {
+        for (const toolCall of event.tool_calls) {
+          if (toolCall.type === "image_generation_call" && toolCall.result) {
+            yield {
+              type: "image_data",
+              mimeType: "image/png",
+              base64Data: toolCall.result,
+            };
+          }
+        }
+      }
+    }
+  }
 }

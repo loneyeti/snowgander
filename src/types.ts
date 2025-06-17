@@ -6,6 +6,8 @@ export interface ModelConfig {
   isThinking: boolean;
   inputTokenCost?: number;
   outputTokenCost?: number;
+  imageOutputTokenCost?: number; // New: Cost for generated image output tokens
+  webSearchCost?: number; // New: Flat fee for using the web search tool
   // Add any other fields from the original Model used by adapters if needed
 }
 
@@ -121,6 +123,7 @@ export interface Message {
 export interface UsageResponse {
   inputCost: number;
   outputCost: number;
+  webSearchCost?: number; // New: The flat fee for web search, if applied
   totalCost: number;
 }
 
@@ -151,8 +154,10 @@ export interface AIRequestOptions {
   thinkingMode?: boolean; // Flag to enable thinking mode (if supported)
   budgetTokens?: number; // Token budget for thinking mode
   prompt?: string; // The primary user prompt (often redundant if included in messages)
-  // Add other vendor-specific options if necessary (e.g., tools for Anthropic/Google)
-  tools?: any[]; // Formatted tools for API call (e.g., Anthropic)
+  // Generic tools array for API calls
+  tools?: any[];
+  // Data retention control
+  store?: boolean; // Whether to store the response (default true)
   // Optional: Specific options for OpenAI Image Generation API
   openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
   // Optional: Specific options for OpenAI Image Editing API
@@ -215,14 +220,10 @@ export interface AIVendorAdapter {
     tools: MCPAvailableTool[],
     options?: AIRequestOptions
   ): Promise<ChatResponse>;
-  // Optional method for image generation
-  generateImage?(
+  // Optional method for streaming responses
+  streamResponse?(
     options: AIRequestOptions
-  ): Promise<AIResponse | ImageGenerationResponse>; // Allow AIResponse for errors
-  // Optional method for image editing
-  editImage?(
-    options: AIRequestOptions
-  ): Promise<AIResponse | ImageEditResponse>; // Allow AIResponse for errors
+  ): AsyncGenerator<ContentBlock, void, unknown>;
 
   // Capability flags
   isVisionCapable?: boolean;
