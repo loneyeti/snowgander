@@ -60,6 +60,30 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
   }
 
+  private getReasoningParam(
+    budgetTokens: number | null | undefined
+  ): { reasoning: { effort: "low" | "medium" | "high" } } | undefined {
+    // If budgetTokens is not provided, do not add the reasoning parameter.
+    if (typeof budgetTokens !== "number" || budgetTokens < 0) {
+      return undefined;
+    }
+
+    let effort: "low" | "medium" | "high";
+
+    if (budgetTokens === 0) {
+      effort = "low";
+    } else if (budgetTokens > 0 && budgetTokens < 8192) {
+      effort = "medium";
+    } else {
+      // budgetTokens >= 8192
+      effort = "high";
+    }
+
+    return {
+      reasoning: { effort },
+    };
+  }
+
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
     const { model, messages, systemPrompt } = options;
 
@@ -180,11 +204,18 @@ export class OpenAIAdapter implements AIVendorAdapter {
       );
     }
 
+    // Get the reasoning parameter using our new helper method
+    const reasoningParam = this.getReasoningParam(options.budgetTokens);
+
     const response = await this.client.responses.create({
       model: model,
       instructions: systemPrompt,
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: apiInput as any,
+      // Use spread syntax to add the reasoning parameter if it exists.
+      // We cast to `any` because the `reasoning` property may not be in the
+      // official SDK types yet, but the API supports it.
+      ...(reasoningParam as any),
       // max_tokens and temperature are not direct params for this specific API endpoint
     });
     let usage: UsageResponse | undefined = undefined; // Initialize usage

@@ -18,29 +18,29 @@ import { computeResponseCost } from "../../utils";
 // Mock the entire OpenAI SDK
 type MockedOpenAI = jest.Mocked<OpenAI>;
 
-const mockCompletionsCreate = jest.fn();
-const mockImagesGenerate = jest.fn(); // Keep mock even if method removed, for safety
+// Enhanced mock implementation to satisfy OpenAI type requirements
+const mockResponsesCreate = jest.fn();
+const mockClient = {
+  responses: {
+    create: mockResponsesCreate,
+  },
+  chat: {
+    completions: {
+      create: jest.fn(), // Keep this for any tests that might use it
+    },
+  },
+};
 
 jest.mock("openai", () => {
-  return jest.fn().mockImplementation(() => {
-    return {
-      responses: {
-        create: mockCompletionsCreate,
-      },
-      images: {
-        generate: mockImagesGenerate, // Keep mock definition
-      },
-    };
-  });
+  return jest.fn().mockImplementation(() => mockClient);
 });
 
 const getMockOpenAIClient = () => {
   const MockOpenAIConstructor = OpenAI as unknown as jest.Mock;
-  const mockClientInstance = MockOpenAIConstructor.mock.instances[0];
   return {
-    mockCompletionsCreate,
-    mockImagesGenerate,
+    mockResponsesCreate,
     MockOpenAIConstructor,
+    mockClient,
   };
 };
 
@@ -90,12 +90,11 @@ describe("OpenAIAdapter", () => {
     };
 
     it("should call responses.create with mapped messages", async () => {
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const mockApiResponse = {
-        // Basic response structure is enough
-        id: "resp-1",
+        id: "chat-1",
         model: mockVisionModel.apiName,
-        output_text: "Hi there!", // Use output_text for simplicity
+        output_text: "Hi there!",
         output: [
           {
             type: "message",
@@ -105,12 +104,12 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 10, output_tokens: 5 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
       await adapter.generateResponse(basicOptions);
 
-      expect(mockCompletionsCreate).toHaveBeenCalledTimes(1);
-      expect(mockCompletionsCreate).toHaveBeenCalledWith({
+      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+      expect(mockResponsesCreate).toHaveBeenCalledWith({
         model: mockVisionModel.apiName,
         instructions: undefined, // No system prompt in basicOptions
         input: [
@@ -121,9 +120,9 @@ describe("OpenAIAdapter", () => {
     });
 
     it("should return mapped AIResponse with content and usage", async () => {
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const mockApiResponse = {
-        id: "resp-2",
+        id: "chat-2",
         model: mockVisionModel.apiName,
         output_text: "Response text",
         output: [
@@ -135,7 +134,7 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 15, output_tokens: 8 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
       const expectedUsage: UsageResponse = {
         inputCost: computeResponseCost(15, mockVisionModel.inputTokenCost!),
@@ -155,14 +154,14 @@ describe("OpenAIAdapter", () => {
     });
 
     it("should include system prompt as instructions", async () => {
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const systemPrompt = "You are a helpful assistant.";
       const optionsWithSystem: AIRequestOptions = {
         ...basicOptions,
         systemPrompt: systemPrompt,
       };
       const mockApiResponse = {
-        id: "resp-sys",
+        id: "chat-sys",
         model: mockVisionModel.apiName,
         output_text: "Okay.",
         output: [
@@ -174,11 +173,11 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 5, output_tokens: 2 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
       await adapter.generateResponse(optionsWithSystem);
 
-      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+      expect(mockResponsesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           instructions: systemPrompt,
           input: [
@@ -189,7 +188,7 @@ describe("OpenAIAdapter", () => {
     });
 
     it("should map ImageDataBlock to data URL for vision input", async () => {
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const imageData: ImageDataBlock = {
         type: "image_data",
         mimeType: "image/png",
@@ -218,11 +217,11 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 50, output_tokens: 5 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
       await adapter.generateResponse(optionsWithImage);
 
-      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+      expect(mockResponsesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           input: [
             {
@@ -241,7 +240,7 @@ describe("OpenAIAdapter", () => {
     });
 
     it("should map ImageBlock (URL) to image_url for vision input", async () => {
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const imageUrl = "http://example.com/image.jpg";
       const imageBlock: ImageBlock = { type: "image", url: imageUrl };
       const messagesWithImageUrl: Message[] = [
@@ -267,11 +266,11 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 60, output_tokens: 6 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
       await adapter.generateResponse(optionsWithImageUrl);
 
-      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+      expect(mockResponsesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           input: [
             {
@@ -296,7 +295,7 @@ describe("OpenAIAdapter", () => {
       };
       // Create non-vision adapter instance *within the test*
       const nonVisionAdapter = new OpenAIAdapter(mockConfig, nonVisionModel);
-      const { mockCompletionsCreate } = getMockOpenAIClient();
+      const { mockResponsesCreate } = getMockOpenAIClient();
 
       const imageData: ImageDataBlock = {
         type: "image_data",
@@ -327,19 +326,17 @@ describe("OpenAIAdapter", () => {
         ],
         usage: { input_tokens: 5, output_tokens: 1 },
       };
-      mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
       const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
 
       await nonVisionAdapter.generateResponse(optionsWithImage);
 
-      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+      expect(mockResponsesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           input: [
             {
               role: "user",
-              content: [
-                { type: "input_text", text: "Hello again" },
-              ],
+              content: [{ type: "input_text", text: "Hello again" }],
             },
           ],
         })
@@ -351,28 +348,30 @@ describe("OpenAIAdapter", () => {
     });
 
     it("should handle API errors", async () => {
-        const { mockCompletionsCreate } = getMockOpenAIClient();
-        const apiError = new Error("API Failure");
-        mockCompletionsCreate.mockRejectedValue(apiError);
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const apiError = new Error("API Failure");
+      mockResponsesCreate.mockRejectedValue(apiError);
 
-        await expect(adapter.generateResponse(basicOptions)).rejects.toThrow(apiError);
+      await expect(adapter.generateResponse(basicOptions)).rejects.toThrow(
+        apiError
+      );
     });
 
     it("should throw error if no content is received", async () => {
-        const { mockCompletionsCreate } = getMockOpenAIClient();
-        const mockApiResponse = { // Response missing output_text and output content
-            id: "resp-nocontent",
-            model: mockVisionModel.apiName,
-            output: [], // Empty output array
-            usage: { input_tokens: 5, output_tokens: 0 },
-        };
-        mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const mockApiResponse = {
+        // Response missing output_text and output content
+        id: "resp-nocontent",
+        model: mockVisionModel.apiName,
+        output: [], // Empty output array
+        usage: { input_tokens: 5, output_tokens: 0 },
+      };
+      mockResponsesCreate.mockResolvedValue(mockApiResponse);
 
-        await expect(adapter.generateResponse(basicOptions)).rejects.toThrow(
-            "No content or output received from OpenAI"
-        );
+      await expect(adapter.generateResponse(basicOptions)).rejects.toThrow(
+        "No content or output received from OpenAI"
+      );
     });
-
   });
 
   // --- sendChat Tests ---
@@ -498,7 +497,8 @@ describe("OpenAIAdapter", () => {
           messages: expect.arrayContaining([
             expect.objectContaining({
               role: "user",
-              content: [ // Image block should be excluded
+              content: [
+                // Image block should be excluded
                 { type: "text", text: "What's in this image?" },
               ],
             }),
@@ -541,5 +541,125 @@ describe("OpenAIAdapter", () => {
   // Removed generateImage tests as this method was removed from OpenAIAdapter
 
   // Removed sendMCPChat tests as this method was removed from OpenAIAdapter
+});
 
+describe("OpenAIAdapter Reasoning Logic", () => {
+  let adapter: OpenAIAdapter;
+  const vendorConfig: VendorConfig = { apiKey: "test-key" };
+  const modelConfig: ModelConfig = {
+    apiName: "o4-mini",
+    isVision: false,
+    isImageGeneration: false,
+    isThinking: true,
+  };
+  const baseRequestOptions: AIRequestOptions = {
+    model: modelConfig.apiName,
+    messages: [{ role: "user", content: [{ type: "text", text: "Hello" }] }],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    adapter = new OpenAIAdapter(vendorConfig, modelConfig);
+    // @ts-ignore
+    adapter.client = mockClient;
+  });
+
+  it("should not include the reasoning parameter when budgetTokens is null", async () => {
+    mockResponsesCreate.mockResolvedValue({
+      id: "chat-123",
+      model: "o4-mini",
+      output_text: "Hi!",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hi!" }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+
+    await adapter.generateResponse({
+      ...baseRequestOptions,
+      budgetTokens: undefined,
+    });
+
+    const calledParams = mockResponsesCreate.mock.calls[0][0];
+    expect(calledParams).not.toHaveProperty("reasoning");
+  });
+
+  it('should set reasoning effort to "low" when budgetTokens is 0', async () => {
+    mockClient.chat.completions.create.mockResolvedValue({
+      id: "chat-123",
+      model: "o4-mini",
+      output_text: "Hi!",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hi!" }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+
+    await adapter.generateResponse({ ...baseRequestOptions, budgetTokens: 0 });
+
+    const calledParams = mockResponsesCreate.mock.calls[0][0];
+    expect(calledParams).toHaveProperty("reasoning");
+    // @ts-ignore
+    expect(calledParams.reasoning).toEqual({ effort: "low" });
+  });
+
+  it('should set reasoning effort to "medium" when budgetTokens is between 1 and 8191', async () => {
+    mockResponsesCreate.mockResolvedValue({
+      id: "chat-123",
+      model: "o4-mini",
+      output_text: "Hi!",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hi!" }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+
+    await adapter.generateResponse({
+      ...baseRequestOptions,
+      budgetTokens: 4096,
+    });
+
+    const calledParams = mockResponsesCreate.mock.calls[0][0];
+    expect(calledParams).toHaveProperty("reasoning");
+    // @ts-ignore
+    expect(calledParams.reasoning).toEqual({ effort: "medium" });
+  });
+
+  it('should set reasoning effort to "high" when budgetTokens is 8192 or greater', async () => {
+    mockResponsesCreate.mockResolvedValue({
+      id: "chat-123",
+      model: "o4-mini",
+      output_text: "Hi!",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hi!" }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+
+    await adapter.generateResponse({
+      ...baseRequestOptions,
+      budgetTokens: 10000,
+    });
+
+    const calledParams = mockResponsesCreate.mock.calls[0][0];
+    expect(calledParams).toHaveProperty("reasoning");
+    // @ts-ignore
+    expect(calledParams.reasoning).toEqual({ effort: "high" });
+  });
 });

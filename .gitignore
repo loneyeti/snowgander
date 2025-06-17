@@ -62,3 +62,7 @@ Thumbs.db
 # Misc
 .vercel
 .turbo
+
+#Repomix
+.repomix
+repomix*
