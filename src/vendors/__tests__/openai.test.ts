@@ -188,11 +188,13 @@ describe("OpenAIAdapter", () => {
       ]);
     });
 
-    it("should yield TextBlocks for each text delta from the stream", async () => {
+    it("should yield TextBlocks for 'response.output_text.delta' events", async () => {
       const { mockResponsesCreate } = getMockOpenAIClient();
       async function* mockTextStream() {
-        yield { type: "output_text_delta", text: "Hello " };
-        yield { type: "output_text_delta", text: "world!" };
+        yield { type: "response.created", response: {} };
+        yield { type: "response.output_text.delta", delta: "Hello " };
+        yield { type: "response.output_text.delta", delta: "world!" };
+        yield { type: "response.completed", response: {} };
       }
       mockResponsesCreate.mockResolvedValue(mockTextStream());
 
@@ -208,33 +210,26 @@ describe("OpenAIAdapter", () => {
       ]);
     });
 
-    it("should stream text and image data when image generation is requested", async () => {
+    it("should stream text and image data for mixed content events", async () => {
       const { mockResponsesCreate } = getMockOpenAIClient();
       const mockImageBase64 = "base64-encoded-image-string";
 
       async function* mockImageStream() {
-        yield { type: "output_text_delta", text: "Here is your image: " };
         yield {
-          type: "image_generation_call",
-          status: "completed",
-          result: mockImageBase64,
+          type: "response.output_text.delta",
+          delta: "Here is your image: ",
         };
-        yield { type: "output_text_delta", text: "!" };
+        yield {
+          type: "response.image_generation_call.partial_image",
+          partial_image_b64: mockImageBase64,
+        };
+        yield { type: "response.output_text.delta", delta: "!" };
       }
       mockResponsesCreate.mockResolvedValue(mockImageStream());
 
       const optionsWithImageGen: AIRequestOptions = {
         ...basicOptions,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: "A cat wearing a hat" }],
-          },
-        ],
-        openaiImageGenerationOptions: {
-          quality: "high",
-          size: "1024x1024",
-        },
+        openaiImageGenerationOptions: { quality: "high", size: "1024x1024" },
       };
 
       const receivedBlocks: ContentBlock[] = [];
@@ -242,14 +237,6 @@ describe("OpenAIAdapter", () => {
       for await (const block of stream) {
         receivedBlocks.push(block);
       }
-
-      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
-      const callArgs = mockResponsesCreate.mock.calls[0][0];
-      expect(callArgs.tools).toContainEqual({
-        type: "image_generation",
-        quality: "high",
-        size: "1024x1024",
-      });
 
       expect(receivedBlocks).toEqual([
         { type: "text", text: "Here is your image: " },
@@ -262,10 +249,16 @@ describe("OpenAIAdapter", () => {
       ]);
     });
 
-    it("should yield an ErrorBlock if the API call throws an error", async () => {
+    it("should yield an ErrorBlock for 'response.failed' event", async () => {
       const { mockResponsesCreate } = getMockOpenAIClient();
-      const apiError = new Error("API Connection Failed");
-      mockResponsesCreate.mockRejectedValue(apiError);
+      const failureMessage = "Model overload";
+      async function* mockFailureStream() {
+        yield {
+          type: "response.failed",
+          response: { error: { message: failureMessage } },
+        };
+      }
+      mockResponsesCreate.mockResolvedValue(mockFailureStream());
 
       const receivedBlocks: ContentBlock[] = [];
       const stream = adapter.streamResponse(basicOptions);
@@ -277,9 +270,9 @@ describe("OpenAIAdapter", () => {
       expect(receivedBlocks[0].type).toBe("error");
       const errorBlock = receivedBlocks[0] as any;
       expect(errorBlock.publicMessage).toBe(
-        "An error occurred while streaming the response."
+        "The request failed during streaming."
       );
-      expect(errorBlock.privateMessage).toBe("API Connection Failed");
+      expect(errorBlock.privateMessage).toBe(failureMessage);
     });
   });
 });

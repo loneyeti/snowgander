@@ -318,6 +318,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
 
       const imageGenerationTool: any = {
         type: "image_generation",
+        partial_images: 1,
       };
 
       if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
@@ -623,26 +624,44 @@ export class OpenAIAdapter implements AIVendorAdapter {
       })) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
-        if (event.type === "output_text_delta" && event.text) {
-          yield {
-            type: "text",
-            text: event.text,
-          };
-        } else if (event.type === "image_generation_call" && event.result) {
-          yield {
-            type: "image_data",
-            mimeType: "image/png",
-            base64Data: event.result,
-          };
-        } else if (
-          event.type === "web_search_call" &&
-          event.status === "started"
-        ) {
-          yield {
-            type: "thinking",
-            thinking: "Performing a web search...",
-            signature: "openai",
-          };
+        switch (event.type) {
+          case "response.output_text.delta":
+            if (event.delta) {
+              yield {
+                type: "text",
+                text: event.delta,
+              };
+            }
+            break;
+
+          case "response.image_generation_call.partial_image":
+            if (event.partial_image_b64) {
+              yield {
+                type: "image_data",
+                mimeType: "image/png", // The API consistently generates PNGs
+                base64Data: event.partial_image_b64,
+              };
+            }
+            break;
+
+          case "response.web_search_call.searching":
+            yield {
+              type: "thinking",
+              thinking: "Searching the web...",
+              signature: "openai",
+            };
+            break;
+
+          case "response.failed":
+            const errorMessage =
+              event.response?.error?.message || "Response failed in stream.";
+            console.error(`OpenAI stream failed: ${errorMessage}`);
+            yield {
+              type: "error",
+              publicMessage: "The request failed during streaming.",
+              privateMessage: errorMessage,
+            };
+            return; // Terminate the generator on a failure event
         }
       }
     } catch (error: any) {
