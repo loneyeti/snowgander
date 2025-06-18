@@ -11,10 +11,10 @@ import {
   TextBlock,
   UsageResponse,
   Message,
-  NotImplementedError, // Added missing import
-  ImageGenerationResponse, // Added missing import (needed for generateImage signature)
-  ImageBlock, // Keep existing imports
-  ImageDataBlock, // Keep existing imports
+  NotImplementedError,
+  ImageGenerationResponse,
+  ImageBlock,
+  ImageDataBlock,
 } from "../../types";
 import { computeResponseCost } from "../../utils";
 
@@ -100,7 +100,7 @@ describe("OpenRouterAdapter", () => {
       ],
       maxTokens: 150,
       temperature: 0.7,
-      systemPrompt: "You are a helpful assistant.",
+      systemPrompt: "You is a helpful assistant.",
       budgetTokens: 50,
     };
 
@@ -379,22 +379,9 @@ describe("OpenRouterAdapter", () => {
       await adapter.sendChat(mockChat);
 
       expect(adapter.generateResponse).toHaveBeenCalledTimes(1);
-      // The prompt is no longer automatically added to messages in sendChat
-      // Instead, the adapter now constructs the user message content based on prompt and visionUrl
-      // However, the test setup for sendChat mocks generateResponse directly,
-      // so we just need to check that the history is passed correctly.
-      // The logic for constructing the *current* user message (with prompt/vision)
-      // happens *inside* sendChat before calling generateResponse, but the test
-      // doesn't need to replicate that internal construction logic when spying.
-      // We just check the options *passed* to the spied generateResponse.
       const expectedOptions: AIRequestOptions = {
         model: mockChat.model,
-        messages: [
-          ...mockChat.responseHistory,
-          // The prompt message is no longer added here automatically by the test assertion.
-          // The actual implementation *does* add a user message if currentUserContent has items,
-          // but the spy assertion focuses on the input *to* sendChat mapped to generateResponse args.
-        ],
+        messages: [...mockChat.responseHistory],
         maxTokens: mockChat.maxTokens === null ? undefined : mockChat.maxTokens,
         budgetTokens:
           mockChat.budgetTokens === null ? undefined : mockChat.budgetTokens,
@@ -410,10 +397,9 @@ describe("OpenRouterAdapter", () => {
       await adapter.sendChat(chatWithoutPrompt);
 
       expect(adapter.generateResponse).toHaveBeenCalledTimes(1);
-      // Correctly expects only the history when prompt is empty
       const expectedOptions: AIRequestOptions = {
         model: chatWithoutPrompt.model,
-        messages: chatWithoutPrompt.responseHistory, // No prompt message added
+        messages: chatWithoutPrompt.responseHistory,
         maxTokens:
           chatWithoutPrompt.maxTokens === null
             ? undefined
@@ -442,17 +428,100 @@ describe("OpenRouterAdapter", () => {
 
   describe("generateImage", () => {
     it("should throw NotImplementedError with correct message", async () => {
-      // Use AIRequestOptions as required by the updated interface
       const dummyOptions: AIRequestOptions = { model: "test", messages: [] };
       await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
         NotImplementedError
       );
-      // Check the specific error message from the adapter
       await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
         "Image generation not directly supported by OpenRouter adapter. Use a specific image generation model/vendor."
       );
     });
   });
 
-  // Removed sendMCPChat tests as the method was removed
+  describe("streamResponse", () => {
+    const mockRequestOptions: AIRequestOptions = {
+      model: mockModelConfig.apiName,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "Tell me a story." }],
+        },
+      ],
+    };
+
+    // This is our mock stream generator
+    async function* mockStreamGenerator(chunks: any[]) {
+      for (const chunk of chunks) {
+        yield chunk;
+      }
+    }
+
+    it("should call completions.create with stream: true", async () => {
+      mockCompletionsCreate.mockResolvedValue(mockStreamGenerator([]));
+      const stream = adapter.streamResponse(mockRequestOptions);
+      await stream.next(); // Start the generator
+
+      expect(mockCompletionsCreate).toHaveBeenCalledTimes(1);
+      expect(mockCompletionsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stream: true,
+        })
+      );
+    });
+
+    it("should yield TextBlocks for each content delta", async () => {
+      const mockChunks = [
+        { choices: [{ delta: { role: "assistant", content: null } }] },
+        { choices: [{ delta: { content: "Once " } }] },
+        { choices: [{ delta: { content: "upon " } }] },
+        { choices: [{ delta: { content: "a time..." } }] },
+        { choices: [{ delta: { content: null } }] }, // End token
+      ];
+      mockCompletionsCreate.mockResolvedValue(mockStreamGenerator(mockChunks));
+
+      const stream = adapter.streamResponse(mockRequestOptions);
+      const receivedBlocks: ContentBlock[] = [];
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+
+      const expectedBlocks: TextBlock[] = [
+        { type: "text", text: "Once " },
+        { type: "text", text: "upon " },
+        { type: "text", text: "a time..." },
+      ];
+
+      expect(receivedBlocks).toEqual(expectedBlocks);
+    });
+
+    it("should handle an empty stream gracefully", async () => {
+      mockCompletionsCreate.mockResolvedValue(mockStreamGenerator([]));
+      const stream = adapter.streamResponse(mockRequestOptions);
+      const receivedBlocks: ContentBlock[] = [];
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+      expect(receivedBlocks).toEqual([]);
+    });
+
+    it("should yield an ErrorBlock if the API call fails", async () => {
+      const apiError = new Error("API Connection Failed");
+      mockCompletionsCreate.mockRejectedValue(apiError);
+
+      const stream = adapter.streamResponse(mockRequestOptions);
+      const receivedBlocks: ContentBlock[] = [];
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+
+      expect(receivedBlocks.length).toBe(1);
+      expect(receivedBlocks[0].type).toBe("error");
+      expect((receivedBlocks[0] as any).publicMessage).toContain(
+        "An error occurred"
+      );
+      expect((receivedBlocks[0] as any).privateMessage).toBe(
+        "API Connection Failed"
+      );
+    });
+  });
 });

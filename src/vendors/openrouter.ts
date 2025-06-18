@@ -273,6 +273,141 @@ export class OpenRouterAdapter implements AIVendorAdapter {
     );
   }
 
+  async *streamResponse(
+    options: AIRequestOptions
+  ): AsyncGenerator<ContentBlock, void, unknown> {
+    const {
+      model,
+      messages,
+      maxTokens,
+      temperature = 1,
+      systemPrompt,
+      budgetTokens,
+    } = options;
+
+    // --- This message preparation logic is copied from generateResponse for consistency ---
+    const apiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    if (systemPrompt) {
+      apiMessages.push({ role: "system", content: systemPrompt });
+    }
+
+    for (const msg of messages) {
+      if (msg.role === "system") {
+        console.warn(
+          "System message found in messages array, skipping. Use systemPrompt parameter instead."
+        );
+        continue;
+      }
+
+      const role = msg.role as "user" | "assistant";
+      if (typeof msg.content === "string") {
+        apiMessages.push({ role, content: msg.content });
+      } else if (Array.isArray(msg.content)) {
+        if (
+          role === "user" &&
+          msg.content.length === 1 &&
+          msg.content[0].type === "text"
+        ) {
+          apiMessages.push({ role: "user", content: msg.content[0].text });
+          continue;
+        }
+
+        const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+        for (const block of msg.content) {
+          if (block.type === "text") {
+            contentParts.push({ type: "text", text: block.text });
+          } else if (
+            block.type === "image" &&
+            this.isVisionCapable &&
+            role === "user"
+          ) {
+            contentParts.push({
+              type: "image_url",
+              image_url: { url: block.url },
+            });
+          } else if (
+            block.type === "image_data" &&
+            this.isVisionCapable &&
+            role === "user"
+          ) {
+            contentParts.push({
+              type: "image_url",
+              image_url: {
+                url: `data:${block.mimeType};base64,${block.base64Data}`,
+              },
+            });
+          } else {
+            console.warn(
+              `Skipping unsupported/irrelevant content block type '${block.type}' for streaming.`
+            );
+          }
+        }
+
+        if (contentParts.length > 0) {
+          if (role === "user") {
+            apiMessages.push({ role: "user", content: contentParts });
+          } else {
+            const assistantTextParts = contentParts.filter(
+              (part): part is OpenAI.Chat.ChatCompletionContentPartText =>
+                part.type === "text"
+            );
+            if (assistantTextParts.length > 0) {
+              const joinedText = assistantTextParts
+                .map((p) => p.text)
+                .join("\n");
+              apiMessages.push({ role: "assistant", content: joinedText });
+            }
+          }
+        }
+      }
+    }
+
+    const nonSystemMessages = apiMessages.filter((m) => m.role !== "system");
+    if (nonSystemMessages.length === 0) {
+      throw new Error(
+        "No valid user or assistant messages to send to OpenRouter API for streaming."
+      );
+    }
+    // --- End of copied logic ---
+
+    const reasoningParams =
+      this.isThinkingCapable && budgetTokens && budgetTokens > 0
+        ? { reasoning: { max_tokens: budgetTokens } }
+        : {};
+
+    try {
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: apiMessages,
+        max_tokens: maxTokens,
+        temperature,
+        stream: true, // This is the crucial parameter for enabling streaming
+        ...reasoningParams,
+      });
+
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content;
+        if (content) {
+          yield {
+            type: "text",
+            text: content,
+          };
+        }
+        // Note: The 'reasoning' field is not typically available in stream deltas with this SDK version.
+        // We are only handling text content for now.
+      }
+    } catch (error: any) {
+      console.error("Error during OpenRouter stream:", error);
+      // In case of an error, yield an error block to the consumer.
+      yield {
+        type: "error",
+        publicMessage:
+          "An error occurred while streaming the response from OpenRouter.",
+        privateMessage: error.message || String(error),
+      };
+    }
+  }
+
   async sendChat(chat: Chat): Promise<ChatResponse> {
     // Map Chat object to AIRequestOptions
     const options: AIRequestOptions = {
