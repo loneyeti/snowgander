@@ -10,8 +10,9 @@ import {
   UsageResponse,
   Chat,
   ImageBlock,
-  ThinkingBlock, // Import ThinkingBlock
+  ThinkingBlock,
   ChatResponse,
+  ContentBlock,
 } from "../../types";
 import Anthropic from "@anthropic-ai/sdk";
 import { computeResponseCost } from "../../utils";
@@ -29,9 +30,8 @@ jest.mock("@anthropic-ai/sdk", () => {
 // Helper to get mock constructor and methods
 const getMockAnthropicClient = () => {
   const MockAnthropicConstructor = Anthropic as unknown as jest.Mock;
-  const mockClientInstance = MockAnthropicConstructor.mock.instances[0];
   return {
-    mockMessagesCreate, // Return the original mock function
+    mockMessagesCreate,
     MockAnthropicConstructor,
   };
 };
@@ -43,7 +43,7 @@ describe("AnthropicAdapter", () => {
     apiName: "claude-3-opus-20240229",
     isVision: true,
     isImageGeneration: false,
-    isThinking: true, // Claude 3 supports thinking blocks
+    isThinking: true,
     inputTokenCost: 15 / 1_000_000,
     outputTokenCost: 75 / 1_000_000,
   };
@@ -58,13 +58,11 @@ describe("AnthropicAdapter", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // Create adapter with Opus model by default
     adapter = new AnthropicAdapter(mockConfig, mockClaude3Opus);
-    // Verify constructor call
     const { MockAnthropicConstructor } = getMockAnthropicClient();
     expect(MockAnthropicConstructor).toHaveBeenCalledWith({
       apiKey: mockConfig.apiKey,
-      baseURL: mockConfig.baseURL, // Will be undefined
+      baseURL: mockConfig.baseURL,
     });
   });
 
@@ -80,12 +78,11 @@ describe("AnthropicAdapter", () => {
   it("should reflect capabilities from ModelConfig", () => {
     expect(adapter.isVisionCapable).toBe(true);
     expect(adapter.isImageGenerationCapable).toBe(false);
-    expect(adapter.isThinkingCapable).toBe(true); // Check thinking capability
+    expect(adapter.isThinkingCapable).toBe(true);
     expect(adapter.inputTokenCost).toBe(mockClaude3Opus.inputTokenCost);
     expect(adapter.outputTokenCost).toBe(mockClaude3Opus.outputTokenCost);
   });
 
-  // --- generateResponse Tests ---
   describe("generateResponse", () => {
     const basicMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: "Hello Claude!" }] },
@@ -98,7 +95,6 @@ describe("AnthropicAdapter", () => {
     it("should call Anthropic messages.create with correct basic parameters", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
       const mockApiResponse = {
-        // Structure based on Anthropic SDK examples
         id: "msg_123",
         type: "message",
         role: "assistant",
@@ -116,11 +112,10 @@ describe("AnthropicAdapter", () => {
       expect(mockMessagesCreate).toHaveBeenCalledWith({
         model: mockClaude3Opus.apiName,
         messages: [
-          // Expect content as array
           { role: "user", content: [{ type: "text", text: "Hello Claude!" }] },
         ],
-        system: undefined, // No system prompt in basicOptions
-        max_tokens: 1024, // Expect the default value used by the adapter
+        system: undefined,
+        max_tokens: 1024,
         temperature: undefined,
       });
     });
@@ -170,7 +165,6 @@ describe("AnthropicAdapter", () => {
         systemPrompt,
       };
       const mockApiResponse = {
-        // Basic response structure
         id: "msg_sys",
         type: "message",
         role: "assistant",
@@ -185,9 +179,8 @@ describe("AnthropicAdapter", () => {
 
       expect(mockMessagesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          system: systemPrompt, // Verify system prompt mapping
+          system: systemPrompt,
           messages: [
-            // Expect content as array
             {
               role: "user",
               content: [{ type: "text", text: "Hello Claude!" }],
@@ -198,7 +191,6 @@ describe("AnthropicAdapter", () => {
     });
 
     it("should warn and IGNORE ImageDataBlock (as mapping is not implemented/verified)", async () => {
-      // Spy on console.warn
       const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
       const { mockMessagesCreate } = getMockAnthropicClient();
       const imageData: ImageDataBlock = {
@@ -217,7 +209,6 @@ describe("AnthropicAdapter", () => {
         messages: messagesWithImage,
       };
       const mockApiResponse = {
-        // Basic response structure
         id: "msg_img",
         type: "message",
         role: "assistant",
@@ -235,21 +226,17 @@ describe("AnthropicAdapter", () => {
           messages: [
             {
               role: "user",
-              content: [
-                // Image block should be filtered out by the adapter's current logic
-                { type: "text", text: "What is in this JPEG?" },
-              ],
+              content: [{ type: "text", text: "What is in this JPEG?" }],
             },
           ],
         })
       );
-      // Check if console.warn was called (optional but good)
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining(
           "Anthropic adapter received ImageDataBlock (base64)"
         )
       );
-      consoleWarnSpy.mockRestore(); // Clean up spy
+      consoleWarnSpy.mockRestore();
     });
 
     it("should map ImageBlock (URL) correctly for vision models", async () => {
@@ -257,7 +244,7 @@ describe("AnthropicAdapter", () => {
       const imageUrl = "http://example.com/image.png";
       const imageBlock: ImageBlock = {
         type: "image",
-        url: imageUrl, // Keep only one url property
+        url: imageUrl,
       };
       const messagesWithImage: Message[] = [
         {
@@ -273,7 +260,6 @@ describe("AnthropicAdapter", () => {
         messages: messagesWithImage,
       };
       const mockApiResponse = {
-        // Basic response structure
         id: "msg_img_url",
         type: "message",
         role: "assistant",
@@ -292,7 +278,6 @@ describe("AnthropicAdapter", () => {
             {
               role: "user",
               content: [
-                // Expect mapped image block + text block
                 {
                   type: "image",
                   source: { type: "url", url: imageUrl },
@@ -305,7 +290,6 @@ describe("AnthropicAdapter", () => {
       );
     });
 
-    // Add tests for ThinkingBlock input/output
     it("should map ThinkingBlock input correctly", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
       const thinkingBlock: ThinkingBlock = {
@@ -314,14 +298,13 @@ describe("AnthropicAdapter", () => {
         signature: "test-sig",
       };
       const messagesWithThinking: Message[] = [
-        { role: "user", content: [thinkingBlock] }, // Assuming thinking can be sent by user? Check adapter logic. Adapter maps it.
+        { role: "user", content: [thinkingBlock] },
       ];
       const optionsWithThinking: AIRequestOptions = {
         ...basicOptions,
         messages: messagesWithThinking,
       };
       const mockApiResponse = {
-        // Basic response structure
         id: "msg_think_in",
         type: "message",
         role: "assistant",
@@ -340,7 +323,6 @@ describe("AnthropicAdapter", () => {
             {
               role: "user",
               content: [
-                // Expect mapped thinking block
                 {
                   type: "thinking",
                   thinking: "Let me think...",
@@ -360,12 +342,11 @@ describe("AnthropicAdapter", () => {
         type: "message",
         role: "assistant",
         content: [
-          // Response includes thinking and text
           {
             type: "thinking",
             thinking: "Assistant is thinking...",
             signature: "anthropic",
-          }, // Anthropic SDK might not have signature here, adapter adds it
+          },
           { type: "text", text: "Here is the result." },
         ],
         model: mockClaude3Opus.apiName,
@@ -374,50 +355,215 @@ describe("AnthropicAdapter", () => {
       };
       mockMessagesCreate.mockResolvedValue(mockApiResponse);
 
-      const response = await adapter.generateResponse(basicOptions); // Basic options are fine, response content matters
+      const response = await adapter.generateResponse(basicOptions);
 
       expect(response.content).toEqual([
-        // Remove explicit type assertion
         {
           type: "thinking",
           thinking: "Assistant is thinking...",
           signature: "anthropic",
-        }, // Expect mapped thinking block
+        },
         { type: "text", text: "Here is the result." },
       ]);
     });
-
-    // Add tests for API errors
   });
 
-  // --- sendChat Tests ---
+  describe("streamResponse", () => {
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Hello stream!" }] },
+    ];
+    const basicOptions: AIRequestOptions = {
+      model: mockClaude3Opus.apiName,
+      messages: basicMessages,
+    };
+
+    it("should stream text deltas as TextBlocks", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      async function* mockStream() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hello" },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: " " },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "World!" },
+        };
+      }
+
+      mockMessagesCreate.mockResolvedValue(mockStream());
+
+      const stream = adapter.streamResponse(basicOptions);
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stream: true,
+        })
+      );
+
+      expect(chunks).toEqual([
+        { type: "text", text: "Hello" },
+        { type: "text", text: " " },
+        { type: "text", text: "World!" },
+      ]);
+    });
+
+    it("should stream thinking deltas as ThinkingBlocks", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+      const optionsWithThinking: AIRequestOptions = {
+        ...basicOptions,
+        thinkingMode: true,
+        budgetTokens: 100,
+      };
+
+      async function* mockStream() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Let me think... " },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Okay, I have a plan." },
+        };
+      }
+
+      mockMessagesCreate.mockResolvedValue(mockStream());
+
+      const stream = adapter.streamResponse(optionsWithThinking);
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([
+        {
+          type: "thinking",
+          thinking: "Let me think... ",
+          signature: "anthropic",
+        },
+        {
+          type: "thinking",
+          thinking: "Okay, I have a plan.",
+          signature: "anthropic",
+        },
+      ]);
+    });
+
+    it("should handle a mixed stream of thinking and text", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+      const optionsWithThinking: AIRequestOptions = {
+        ...basicOptions,
+        thinkingMode: true,
+      };
+
+      async function* mockStream() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "thinking_delta", thinking: "Analyzing... " },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "Here is " },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "the answer." },
+        };
+      }
+
+      mockMessagesCreate.mockResolvedValue(mockStream());
+
+      const stream = adapter.streamResponse(optionsWithThinking);
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([
+        {
+          type: "thinking",
+          thinking: "Analyzing... ",
+          signature: "anthropic",
+        },
+        { type: "text", text: "Here is " },
+        { type: "text", text: "the answer." },
+      ]);
+    });
+
+    it("should ignore tool use deltas and log a warning", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
+
+      async function* mockStream() {
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: '{"tool":' },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 1,
+          delta: { type: "text_delta", text: "Some text" },
+        };
+      }
+
+      mockMessagesCreate.mockResolvedValue(mockStream());
+
+      const stream = adapter.streamResponse(basicOptions);
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks).toEqual([{ type: "text", text: "Some text" }]);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("tool_use delta (input_json_delta)")
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
+  });
+
   describe("sendChat", () => {
     let generateResponseSpy: jest.SpyInstance;
     const baseChat: Partial<Chat> = {
-      // Use Partial for easier test setup
       model: mockClaude3Opus.apiName,
       responseHistory: [],
       visionUrl: null,
       prompt: "User prompt",
       imageURL: null,
       maxTokens: 100,
-      budgetTokens: null, // Thinking disabled by default
+      budgetTokens: null,
       systemPrompt: "System prompt",
     };
 
     beforeEach(() => {
-      // Mock the instance's generateResponse method before each sendChat test
       generateResponseSpy = jest
         .spyOn(adapter, "generateResponse")
         .mockResolvedValue({
           role: "assistant",
           content: [{ type: "text", text: "Mocked chat response" }],
-          usage: { inputCost: 0.015, outputCost: 0.075, totalCost: 0.09 }, // Example usage
+          usage: { inputCost: 0.015, outputCost: 0.075, totalCost: 0.09 },
         });
     });
 
     afterEach(() => {
-      // Restore the original implementation after each test
       generateResponseSpy.mockRestore();
     });
 
@@ -443,7 +589,6 @@ describe("AnthropicAdapter", () => {
       expect(generateResponseSpy).toHaveBeenCalledWith({
         model: chatWithHistory.model,
         messages: [
-          // Expect history + current prompt (as user message)
           {
             role: "user",
             content: [{ type: "text", text: "Previous question" }],
@@ -458,16 +603,17 @@ describe("AnthropicAdapter", () => {
           },
         ],
         maxTokens: chatWithHistory.maxTokens,
-        budgetTokens: undefined, // Thinking disabled
+        budgetTokens: undefined,
         systemPrompt: chatWithHistory.systemPrompt,
-        thinkingMode: false, // Explicitly false when budgetTokens is null/0
+        thinkingMode: false,
+        tools: undefined,
       });
     });
 
     it("should enable thinkingMode and pass budgetTokens if budgetTokens > 0", async () => {
       const chatWithThinking: Chat = {
         ...baseChat,
-        budgetTokens: 500, // Enable thinking
+        budgetTokens: 500,
         prompt: "Think about this",
       } as Chat;
 
@@ -494,7 +640,6 @@ describe("AnthropicAdapter", () => {
         outputCost: 0.075,
         totalCost: 0.09,
       };
-      // Ensure the spy returns the expected usage
       generateResponseSpy.mockResolvedValue({
         role: "assistant",
         content: [{ type: "text", text: "Specific chat response" }],
@@ -506,7 +651,7 @@ describe("AnthropicAdapter", () => {
       expect(result).toEqual<ChatResponse>({
         role: "assistant",
         content: [{ type: "text", text: "Specific chat response" }],
-        usage: expectedUsage, // Verify usage is passed through
+        usage: expectedUsage,
       });
     });
 
@@ -516,16 +661,11 @@ describe("AnthropicAdapter", () => {
         visionUrl: "http://example.com/vision.jpg",
         prompt: "Describe this vision image",
       } as Chat;
-
-      // Ensure the adapter instance being tested is vision capable
-      adapter.isVisionCapable = true; // Explicitly set for clarity if needed, though mockClaude3Opus is
-
+      adapter.isVisionCapable = true;
       await adapter.sendChat(chatWithVision);
-
       expect(generateResponseSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           messages: [
-            // Expect user message with ImageBlock first, then TextBlock
             {
               role: "user",
               content: [
@@ -539,12 +679,10 @@ describe("AnthropicAdapter", () => {
     });
 
     it("should ignore visionUrl if model is not vision capable", async () => {
-      // Create an adapter instance with a non-vision model config for this test
       const nonVisionAdapter = new AnthropicAdapter(mockConfig, {
-        ...mockClaude3Sonnet, // Use Sonnet but override vision
+        ...mockClaude3Sonnet,
         isVision: false,
       });
-      // Spy on the non-vision adapter's generateResponse
       const nonVisionGenerateSpy = jest
         .spyOn(nonVisionAdapter, "generateResponse")
         .mockResolvedValue({
@@ -552,7 +690,6 @@ describe("AnthropicAdapter", () => {
           content: [{ type: "text", text: "Mocked non-vision response" }],
           usage: { inputCost: 0.01, outputCost: 0.02, totalCost: 0.03 },
         });
-      // Spy on console.warn
       const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
 
       const chatWithVision: Chat = {
@@ -566,7 +703,6 @@ describe("AnthropicAdapter", () => {
       expect(nonVisionGenerateSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           messages: [
-            // Expect only the text prompt, no image block
             {
               role: "user",
               content: [{ type: "text", text: "Describe this vision image" }],
@@ -574,7 +710,6 @@ describe("AnthropicAdapter", () => {
           ],
         })
       );
-      // Verify the warning was logged
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining(
           "Vision URL provided for non-vision capable Anthropic model"
@@ -586,19 +721,17 @@ describe("AnthropicAdapter", () => {
     });
   });
 
-  // --- generateImage Tests ---
   describe("generateImage", () => {
     it("should throw NotImplementedError", async () => {
-      // Provide minimal AIRequestOptions to satisfy the type checker
       const dummyOptions: AIRequestOptions = {
-        model: 'claude-3-opus-20240229', // Use a valid model name
-        messages: [{ role: 'user', content: [{ type: 'text', text: 'generate image' }] }],
+        model: "claude-3-opus-20240229",
+        messages: [
+          { role: "user", content: [{ type: "text", text: "generate image" }] },
+        ],
       };
       await expect(adapter.generateImage(dummyOptions)).rejects.toThrow(
-        "Image generation not supported by Anthropic" // Match exact error message
+        "Image generation not supported by Anthropic"
       );
     });
   });
-
-  // --- sendMCPChat Tests Removed ---
 });

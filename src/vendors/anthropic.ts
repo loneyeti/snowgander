@@ -286,6 +286,174 @@ export class AnthropicAdapter implements AIVendorAdapter {
     );
   }
 
+  async *streamResponse(
+    options: AIRequestOptions
+  ): AsyncGenerator<ContentBlock, void, unknown> {
+    const {
+      model,
+      messages,
+      maxTokens,
+      budgetTokens,
+      systemPrompt,
+      thinkingMode,
+      tools,
+    } = options;
+
+    // This message formatting logic is copied from generateResponse
+    const formattedMessages = messages.map((msg) => {
+      const role =
+        msg.role === "assistant" ? ("assistant" as const) : ("user" as const);
+      if (typeof msg.content === "string") {
+        return { role, content: msg.content };
+      }
+      const mappedContent = msg.content.reduce<
+        Array<
+          | {
+              type: "text";
+              text: string;
+            }
+          | {
+              type: "thinking";
+              thinking: string;
+              signature: string;
+            }
+          | {
+              type: "tool_result";
+              tool_use_id: string;
+              content: string | Array<{ type: "text"; text: string }>;
+            }
+          | ToolUseBlockParam
+        >
+      >((acc, block) => {
+        if (block.type === "text") {
+          acc.push({
+            type: "text",
+            text: block.text,
+          });
+        } else if (block.type === "thinking") {
+          acc.push({
+            type: "thinking",
+            thinking: block.thinking,
+            signature: block.signature,
+          });
+        } else if (block.type === "tool_result" && msg.role === "user") {
+          const toolResultContent = block.content
+            .map((c) => (c.type === "text" ? c.text : JSON.stringify(c)))
+            .join("\n");
+          acc.push({
+            type: "tool_result",
+            tool_use_id: block.toolUseId,
+            content: toolResultContent,
+          });
+        } else if (block.type === "tool_use" && msg.role === "assistant") {
+          if (block.id && typeof block.input === "string") {
+            try {
+              const parsedInput = JSON.parse(block.input);
+              acc.push({
+                type: "tool_use",
+                id: block.id,
+                name: block.name,
+                input: parsedInput,
+              });
+            } catch (e) {
+              console.error(
+                `Skipping tool_use block due to invalid JSON input: ${block.input}`,
+                e
+              );
+            }
+          } else {
+            console.warn(
+              "Skipping tool_use block due to missing ID or invalid input type."
+            );
+          }
+        } else if (
+          block.type === "image" &&
+          this.isVisionCapable &&
+          msg.role === "user"
+        ) {
+          acc.push({
+            type: "image",
+            source: {
+              type: "url",
+              url: block.url,
+            },
+          } as any);
+        } else if (
+          block.type === "image_data" &&
+          this.isVisionCapable &&
+          msg.role === "user"
+        ) {
+          console.warn(
+            "Anthropic adapter received ImageDataBlock (base64). Anthropic API example uses URL source. Skipping image. Check Anthropic documentation for base64 support."
+          );
+        } else if (
+          (block.type === "image" || block.type === "image_data") &&
+          (!this.isVisionCapable || msg.role !== "user")
+        ) {
+          console.warn(
+            `Skipping image block (type: ${block.type}) in role '${msg.role}' for model '${model}'. Vision capable: ${this.isVisionCapable}`
+          );
+        }
+        return acc;
+      }, []);
+      return {
+        role,
+        content:
+          mappedContent.length > 0
+            ? mappedContent
+            : JSON.stringify(msg.content),
+      };
+    });
+
+    try {
+      const stream = await this.client.messages.create({
+        model,
+        messages: formattedMessages,
+        system: systemPrompt,
+        max_tokens: maxTokens || 1024,
+        stream: true, // Enable streaming
+        ...(thinkingMode &&
+          this.isThinkingCapable && {
+            thinking: {
+              type: "enabled",
+              budget_tokens:
+                budgetTokens || Math.floor((maxTokens || 1024) / 2),
+            },
+          }),
+        ...(tools && { tools }),
+      });
+
+      for await (const event of stream) {
+        if (event.type === "content_block_delta") {
+          if (event.delta.type === "text_delta" && event.delta.text) {
+            yield {
+              type: "text",
+              text: event.delta.text,
+            };
+          } else if (
+            event.delta.type === "thinking_delta" &&
+            event.delta.thinking
+          ) {
+            yield {
+              type: "thinking",
+              thinking: event.delta.thinking,
+              signature: "anthropic",
+            };
+          } else if (event.delta.type === "input_json_delta") {
+            // For now, we are not handling tool use streaming to keep this simple.
+            // A console warning is sufficient.
+            console.warn(
+              "Received tool_use delta (input_json_delta), but streaming for this is not yet implemented."
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error during Anthropic stream:", error);
+      throw error;
+    }
+  }
+
   async sendChat(chat: Chat): Promise<ChatResponse> {
     // Combine history with the current prompt
     const messagesToSend = [...chat.responseHistory]; // Copy history
