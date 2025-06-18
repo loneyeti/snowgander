@@ -43,11 +43,11 @@
     "@google/genai": "^1.5.1",
     "@types/jest": "^29.5.14",
     "axios": "^1.8.4",
-    "file-type": "^20.5.0",
     "jest": "^29.7.0",
     "openai": "^4.104.0"
   },
   "devDependencies": {
+    "file-type": "^21.0.0",
     "ts-jest": "^29.3.1",
     "typescript": "^5.8.2"
   }

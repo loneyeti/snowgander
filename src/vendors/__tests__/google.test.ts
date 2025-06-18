@@ -11,6 +11,7 @@ import {
   ImageBlock,
   ChatResponse,
   NotImplementedError,
+  ContentBlock,
 } from "../../types";
 import {
   GoogleGenAI, // Import the NEW class
@@ -24,12 +25,13 @@ import { computeResponseCost, getImageDataFromUrl } from "../../utils"; // Impor
 // --- Define Mocks FIRST ---
 // Mock for the new SDK structure: client.models.generateContent
 const mockGenerateContent = jest.fn();
+const mockGenerateContentStream = jest.fn();
 // Mock for the constructor
 const mockGoogleGenAIConstructor = jest.fn().mockImplementation(() => ({
   models: {
     generateContent: mockGenerateContent,
+    generateContentStream: mockGenerateContentStream,
   },
-  // Add other methods if needed by the adapter, but models.generateContent is primary
 }));
 
 // --- Mock the SDK using jest.doMock (not hoisted) ---
@@ -94,6 +96,7 @@ describe("GoogleAIAdapter", () => {
     // Clear mocks before each test
     mockGoogleGenAIConstructor.mockClear();
     mockGenerateContent.mockClear();
+    mockGenerateContentStream.mockClear();
 
     // Re-initialize adapter before each test
     adapter = new GoogleAIAdapter(mockConfig, mockGeminiProVision);
@@ -663,4 +666,137 @@ describe("GoogleAIAdapter", () => {
   });
 
   // Removed sendMCPChat tests as the method was removed
+
+  // --- streamResponse Tests ---
+  describe("streamResponse", () => {
+    const basicOptions: AIRequestOptions = {
+      model: mockGeminiPro.apiName,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "Stream me a story" }],
+        },
+      ],
+    };
+
+    it("should stream text and image content chunks correctly", async () => {
+      // 1. Setup mock stream
+      const mockImageData = Buffer.from("fake-png-data", "utf-8");
+      async function* mockStream() {
+        yield { text: "This is the first part. " };
+        yield { text: "Here is an image:" };
+        yield { data: mockImageData };
+        yield { text: " The end." };
+      }
+      mockGenerateContentStream.mockReturnValue(mockStream());
+
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+
+      // 2. Call the method
+      const stream = textAdapter.streamResponse(basicOptions);
+
+      // 3. Collect results
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      // 4. Assert the results
+      expect(chunks.length).toBe(4);
+
+      expect(chunks[0]).toEqual({
+        type: "text",
+        text: "This is the first part. ",
+      });
+      expect(chunks[1]).toEqual({
+        type: "text",
+        text: "Here is an image:",
+      });
+
+      // The file-type mock will return image/png for our fake data
+      expect(chunks[2]).toEqual({
+        type: "image_data",
+        mimeType: "image/png",
+        base64Data: mockImageData.toString("base64"),
+      });
+      expect(chunks[3]).toEqual({
+        type: "text",
+        text: " The end.",
+      });
+
+      // Verify the mock was called
+      expect(mockGenerateContentStream).toHaveBeenCalledTimes(1);
+      expect(mockGenerateContentStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: basicOptions.model,
+        })
+      );
+    });
+
+    it("should yield an error block if the stream fails", async () => {
+      const errorMessage = "Stream failed!";
+      mockGenerateContentStream.mockImplementation(() => {
+        throw new Error(errorMessage);
+      });
+
+      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
+      const stream = textAdapter.streamResponse(basicOptions);
+
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.length).toBe(1);
+      expect(chunks[0].type).toBe("error");
+      expect((chunks[0] as any).privateMessage).toBe(errorMessage);
+    });
+
+    it("should handle visionUrl correctly in streaming", async () => {
+      const visionUrl = "http://example.com/image.jpg";
+      const optionsWithVisionUrl: AIRequestOptions = {
+        ...basicOptions,
+        visionUrl: visionUrl,
+        model: mockGeminiProVision.apiName,
+      };
+
+      // Mock image data processing
+      const mockImageData = {
+        mimeType: "image/jpeg",
+        base64Data: "base64jpegstring",
+      };
+      mockGetImageDataFromUrl.mockResolvedValue(mockImageData);
+
+      // Mock stream response
+      async function* mockVisionStream() {
+        yield { text: "This is an image description" };
+      }
+      mockGenerateContentStream.mockReturnValue(mockVisionStream());
+
+      const visionAdapter = new GoogleAIAdapter(
+        mockConfig,
+        mockGeminiProVision
+      );
+      const stream = visionAdapter.streamResponse(optionsWithVisionUrl);
+      await stream.next(); // This executes the generator's code until the first `yield`
+
+      expect(mockGetImageDataFromUrl).toHaveBeenCalledWith(visionUrl);
+      expect(mockGenerateContentStream).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contents: expect.arrayContaining([
+            expect.objectContaining({
+              parts: expect.arrayContaining([
+                expect.objectContaining({
+                  inlineData: {
+                    mimeType: mockImageData.mimeType,
+                    data: mockImageData.base64Data,
+                  },
+                }),
+              ]),
+            }),
+          ]),
+        })
+      );
+    });
+  });
 });

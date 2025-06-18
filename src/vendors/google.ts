@@ -355,6 +355,136 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     };
   }
 
+  async *streamResponse(
+    options: AIRequestOptions
+  ): AsyncGenerator<ContentBlock, void, unknown> {
+    const {
+      model,
+      messages,
+      maxTokens,
+      budgetTokens,
+      systemPrompt,
+      visionUrl,
+    } = options;
+    // Prepare generationConfig - structure might differ slightly
+    const generationConfig: GenerationConfig = {}; // Use GenerationConfig from @google/genai
+    if (maxTokens) {
+      generationConfig.maxOutputTokens = maxTokens;
+    }
+    // Add thinkingConfig using 'as any' if SDK types don't support it yet
+    if (this.isThinkingCapable) {
+      (generationConfig as any).thinkingConfig = {
+        includeThoughts: true,
+      };
+      if (budgetTokens && budgetTokens > 0) {
+        (generationConfig as any).thinkingConfig.thinkingBudget = budgetTokens;
+      } else if (budgetTokens === 0) {
+        (generationConfig as any).thinkingConfig.thinkingBudget = 0;
+      }
+    }
+    // Image generation modality - check if new SDK handles this differently
+    if (this.isImageGenerationCapable) {
+      // This might need adjustment based on the new SDK's capabilities/API
+      (generationConfig as any).responseModalities = ["Text", "Image"];
+    }
+    let formattedMessages = this.mapMessagesToGoogleContent(messages);
+    let systemInstructionContent: Content | undefined = undefined;
+    if (systemPrompt) {
+      systemInstructionContent = {
+        role: "system",
+        parts: [{ text: systemPrompt }],
+      };
+    } else {
+      formattedMessages = this.mapMessagesToGoogleContent(messages);
+    }
+    let visionPart: Part | null = null;
+    if (visionUrl && this.isVisionCapable) {
+      const imageData = await getImageDataFromUrl(visionUrl);
+      if (imageData) {
+        visionPart = {
+          inlineData: {
+            mimeType: imageData.mimeType,
+            data: imageData.base64Data,
+          },
+        };
+      } else {
+        console.warn(`Could not process image from visionUrl: ${visionUrl}`);
+      }
+    }
+    if (visionPart) {
+      const lastMessageIndex = formattedMessages.length - 1;
+      if (
+        lastMessageIndex >= 0 &&
+        formattedMessages[lastMessageIndex].role === "user" &&
+        formattedMessages[lastMessageIndex].parts
+      ) {
+        formattedMessages[lastMessageIndex].parts.push(visionPart);
+      } else {
+        formattedMessages.push({ role: "user", parts: [visionPart] });
+        console.warn(
+          "Image data provided but no user message found. Created new user message for image."
+        );
+      }
+    }
+    const generateContentArgs: any = {
+      model: model,
+      contents: formattedMessages,
+      generationConfig: generationConfig,
+    };
+    if (systemInstructionContent) {
+      generateContentArgs.systemInstruction = systemInstructionContent;
+    }
+    if (this.isImageGenerationCapable) {
+      generateContentArgs.config = {
+        responseModalities: [Modality.TEXT, Modality.IMAGE],
+      };
+    }
+    try {
+      const responseStream = await this.client.models.generateContentStream(
+        generateContentArgs
+      );
+
+      for await (const chunk of responseStream) {
+        const text = chunk.text;
+        const data = chunk.data;
+
+        if (text) {
+          yield {
+            type: "text",
+            text: text,
+          };
+        }
+
+        if (data) {
+          // The 'data' field is a Buffer. We need to determine its mimeType.
+          const { fileTypeFromBuffer } = await import("file-type");
+          const bufferData = Buffer.from(data as unknown as ArrayBuffer);
+          const type = await fileTypeFromBuffer(bufferData);
+
+          if (type && type.mime.startsWith("image/")) {
+            yield {
+              type: "image_data",
+              mimeType: type.mime,
+              base64Data: bufferData.toString("base64"),
+            };
+          } else {
+            console.warn(
+              `Received a data chunk with an unknown or non-image mime type: ${type?.mime}. Skipping.`
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error during Google GenAI stream:", error);
+      // Optionally, yield an error block
+      yield {
+        type: "error",
+        publicMessage: "An error occurred while streaming the response.",
+        privateMessage: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   // Function calling / MCP tool handling would need to be added here
   // by integrating with the `tools` and `toolConfig` parameters
   // in the `generateResponse` method, similar to how Anthropic adapter does it,
