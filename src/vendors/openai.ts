@@ -62,6 +62,105 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
   }
 
+  private mapToOpenAIChatMessages(
+    messages: Message[]
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    const apiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+
+    for (const msg of messages) {
+      // Skip system messages, as they are handled by a separate parameter.
+      if (msg.role === "system") {
+        console.warn(
+          "System message found in messages array, skipping. Use systemPrompt parameter in AIRequestOptions instead."
+        );
+        continue;
+      }
+
+      // Map role. The chat completions API uses 'assistant', not 'developer'.
+      const role = msg.role as "user" | "assistant";
+
+      if (typeof msg.content === "string") {
+        apiMessages.push({ role, content: msg.content });
+        continue;
+      }
+
+      if (!Array.isArray(msg.content)) {
+        console.warn(
+          `Message content is not a string or array for role '${role}'. Skipping message.`
+        );
+        continue;
+      }
+
+      // Handle multimodal content (text and images)
+      const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [];
+      for (const block of msg.content) {
+        if (block.type === "text") {
+          contentParts.push({ type: "text", text: block.text });
+        } else if (
+          block.type === "image" &&
+          this.isVisionCapable &&
+          role === "user"
+        ) {
+          contentParts.push({
+            type: "image_url",
+            image_url: { url: block.url },
+          });
+        } else if (
+          block.type === "image_data" &&
+          this.isVisionCapable &&
+          role === "user"
+        ) {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${block.mimeType};base64,${block.base64Data}`,
+            },
+          });
+        } else {
+          // Warn about unsupported or improperly placed blocks
+          if (
+            (block.type === "image" || block.type === "image_data") &&
+            !this.isVisionCapable
+          ) {
+            console.warn(
+              `Skipping image block in user message for non-vision model '${this.modelConfig.apiName}'.`
+            );
+          } else if (
+            (block.type === "image" || block.type === "image_data") &&
+            role !== "user"
+          ) {
+            console.warn(
+              `Skipping image block found in non-user role ('${role}').`
+            );
+          } else {
+            console.warn(
+              `Skipping unsupported content block type '${block.type}' for OpenAI Chat Completions API call.`
+            );
+          }
+        }
+      }
+
+      if (contentParts.length > 0) {
+        // For assistant messages, OpenAI API expects a string, not a content array.
+        // We will join the text parts.
+        if (role === "assistant") {
+          const assistantText = contentParts
+            .filter((p) => p.type === "text")
+            .map((p) => (p as OpenAI.Chat.ChatCompletionContentPartText).text)
+            .join("\n");
+          if (assistantText) {
+            apiMessages.push({ role: "assistant", content: assistantText });
+          }
+        } else {
+          // User messages can have a content array
+          apiMessages.push({ role: "user", content: contentParts });
+        }
+      }
+    }
+
+    return apiMessages;
+  }
+
   private getReasoningParam(
     budgetTokens: number | null | undefined
   ): { reasoning: { effort: "low" | "medium" | "high" } } | undefined {
@@ -436,108 +535,61 @@ export class OpenAIAdapter implements AIVendorAdapter {
   async *streamResponse(
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
-    const { model, messages, systemPrompt, tools, store } = options;
+    const { model, messages, systemPrompt, tools, maxTokens, temperature } =
+      options;
 
-    // Map messages to API input format (same as generateResponse)
-    const apiInput: OpenAIMessageInput[] = messages
-      .map((msg): OpenAIMessageInput | null => {
-        let role: "user" | "assistant" | "developer";
-        switch (msg.role) {
-          case "user":
-          case "assistant":
-            role = msg.role;
-            break;
-          case "system":
-            console.warn(
-              "System role message found; use 'systemPrompt' instead"
-            );
-            return null;
-          default:
-            console.warn(`Unsupported role '${msg.role}' mapped to 'user'`);
-            role = "user";
-        }
+    // Use the new helper method to map messages
+    let apiMessages = this.mapToOpenAIChatMessages(messages);
 
-        if (!Array.isArray(msg.content)) {
-          console.warn(`Message content is not an array for role '${role}'`);
-          return null;
-        }
-
-        const apiContentParts = msg.content
-          .map((block): OpenAIMessageContentPart | null => {
-            if (block.type === "text") {
-              return {
-                type: role === "assistant" ? "output_text" : "input_text",
-                text: block.text,
-              };
-            } else if (
-              (block.type === "image" || block.type === "image_data") &&
-              this.isVisionCapable &&
-              role === "user"
-            ) {
-              return {
-                type: "input_image",
-                image_url:
-                  block.type === "image"
-                    ? block.url
-                    : `data:${block.mimeType};base64,${block.base64Data}`,
-              };
-            }
-            return null;
-          })
-          .filter((part): part is OpenAIMessageContentPart => part !== null);
-
-        return apiContentParts.length > 0
-          ? { role, content: apiContentParts }
-          : null;
-      })
-      .filter((msg): msg is OpenAIMessageInput => msg !== null);
-
-    if (apiInput.length === 0) {
-      throw new Error("No valid messages for OpenAI streaming request");
+    if (systemPrompt) {
+      apiMessages.unshift({ role: "system", content: systemPrompt });
     }
 
-    const reasoningParam = this.getReasoningParam(options.budgetTokens);
+    if (apiMessages.filter((m) => m.role !== "system").length === 0) {
+      throw new Error(
+        "No valid user or assistant messages to send for streaming."
+      );
+    }
 
-    // Create streaming response and handle it properly
-    const streamResponse = await this.client.responses.create({
-      model,
-      instructions: systemPrompt,
-      input: apiInput as any,
-      tools,
-      store,
-      stream: true,
-      ...(reasoningParam as any),
-    });
+    // Note: The 'reasoning' parameter from the Responses API is not standard in chat.completions.
+    // We will omit it for this streaming implementation to align with the standard API.
+    // The 'store' parameter is also specific to the Responses API.
 
-    // Use a type-safe approach to iterate through the stream
-    const iterableStream = streamResponse as unknown as AsyncIterable<{
-      output_text_delta?: string;
-      tool_calls?: Array<{
-        type: string;
-        result?: string;
-      }>;
-    }>;
+    try {
+      const stream = await this.client.chat.completions.create({
+        model,
+        messages: apiMessages,
+        stream: true,
+        tools: tools,
+        max_tokens: maxTokens,
+        temperature: temperature,
+      });
 
-    for await (const event of iterableStream) {
-      // Handle text delta events
-      if (event.output_text_delta) {
-        yield {
-          type: "text",
-          text: event.output_text_delta,
-        };
-      }
-      // Handle tool call events if needed
-      if (event.tool_calls) {
-        for (const toolCall of event.tool_calls) {
-          if (toolCall.type === "image_generation_call" && toolCall.result) {
-            yield {
-              type: "image_data",
-              mimeType: "image/png",
-              base64Data: toolCall.result,
-            };
-          }
+      for await (const chunk of stream) {
+        // Handle text content delta
+        const textDelta = chunk.choices[0]?.delta?.content;
+        if (textDelta) {
+          yield {
+            type: "text",
+            text: textDelta,
+          };
+        }
+
+        // Handle tool calls delta
+        // A full implementation would aggregate these deltas and yield a complete ToolUseBlock.
+        // For now, we acknowledge their existence but focus on fixing text streaming.
+        const toolCallDeltas = chunk.choices[0]?.delta?.tool_calls;
+        if (toolCallDeltas) {
+          // This can be enhanced in a future task.
         }
       }
+    } catch (error: any) {
+      console.error("Error during OpenAI stream:", error);
+      yield {
+        type: "error",
+        publicMessage: "An error occurred while streaming the response.",
+        privateMessage: error.message || String(error),
+      };
     }
   }
 }
