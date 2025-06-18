@@ -164,32 +164,40 @@ describe("OpenAIAdapter", () => {
     };
 
     beforeEach(() => {
-      mockClient.chat.completions.create.mockClear();
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockClear();
     });
 
-    it("should call chat.completions.create with stream: true and correct parameters", async () => {
+    it("should call responses.create with stream: true and correct parameters", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      async function* mockStream() {}
+      mockResponsesCreate.mockResolvedValue(mockStream());
+
       const stream = adapter.streamResponse(basicOptions);
-      await stream.next(); // Start the generator to trigger the API call
+      await stream.next();
 
-      expect(mockClient.chat.completions.create).toHaveBeenCalledTimes(1);
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model: mockVisionModel.apiName,
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: "Tell me a story" }],
-            },
-          ],
-          stream: true,
-        })
-      );
+      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+      const callArgs = mockResponsesCreate.mock.calls[0][0];
+      expect(callArgs).toHaveProperty("model", mockVisionModel.apiName);
+      expect(callArgs).toHaveProperty("stream", true);
+      expect(callArgs.input).toEqual([
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "Tell me a story" }],
+        },
+      ]);
     });
 
-    it("should yield TextBlocks for each content delta from the stream", async () => {
+    it("should yield TextBlocks for each text delta from the stream", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      async function* mockTextStream() {
+        yield { type: "output_text_delta", text: "Hello " };
+        yield { type: "output_text_delta", text: "world!" };
+      }
+      mockResponsesCreate.mockResolvedValue(mockTextStream());
+
       const receivedBlocks: ContentBlock[] = [];
       const stream = adapter.streamResponse(basicOptions);
-
       for await (const block of stream) {
         receivedBlocks.push(block);
       }
@@ -200,50 +208,66 @@ describe("OpenAIAdapter", () => {
       ]);
     });
 
-    it("should handle system prompt and vision content in the request", async () => {
-      const visionMessages: Message[] = [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "What's in this image?" },
-            { type: "image", url: "http://example.com/image.png" },
-          ],
-        },
-      ];
-      const optionsWithVision: AIRequestOptions = {
+    it("should stream text and image data when image generation is requested", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const mockImageBase64 = "base64-encoded-image-string";
+
+      async function* mockImageStream() {
+        yield { type: "output_text_delta", text: "Here is your image: " };
+        yield {
+          type: "image_generation_call",
+          status: "completed",
+          result: mockImageBase64,
+        };
+        yield { type: "output_text_delta", text: "!" };
+      }
+      mockResponsesCreate.mockResolvedValue(mockImageStream());
+
+      const optionsWithImageGen: AIRequestOptions = {
         ...basicOptions,
-        messages: visionMessages,
-        systemPrompt: "You are a helpful assistant.",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "A cat wearing a hat" }],
+          },
+        ],
+        openaiImageGenerationOptions: {
+          quality: "high",
+          size: "1024x1024",
+        },
       };
 
-      const stream = adapter.streamResponse(optionsWithVision);
-      await stream.next(); // Start the generator
+      const receivedBlocks: ContentBlock[] = [];
+      const stream = adapter.streamResponse(optionsWithImageGen);
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
 
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          messages: [
-            { role: "system", content: "You are a helpful assistant." },
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "What's in this image?" },
-                {
-                  type: "image_url",
-                  image_url: { url: "http://example.com/image.png" },
-                },
-              ],
-            },
-          ],
-          stream: true,
-        })
-      );
+      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+      const callArgs = mockResponsesCreate.mock.calls[0][0];
+      expect(callArgs.tools).toContainEqual({
+        type: "image_generation",
+        quality: "high",
+        size: "1024x1024",
+      });
+
+      expect(receivedBlocks).toEqual([
+        { type: "text", text: "Here is your image: " },
+        {
+          type: "image_data",
+          mimeType: "image/png",
+          base64Data: mockImageBase64,
+        },
+        { type: "text", text: "!" },
+      ]);
     });
 
     it("should yield an ErrorBlock if the API call throws an error", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
       const apiError = new Error("API Connection Failed");
-      mockClient.chat.completions.create.mockRejectedValue(apiError);
-      const receivedBlocks: ContentBlock[] = [];
+      mockResponsesCreate.mockRejectedValue(apiError);
 
+      const receivedBlocks: ContentBlock[] = [];
       const stream = adapter.streamResponse(basicOptions);
       for await (const block of stream) {
         receivedBlocks.push(block);

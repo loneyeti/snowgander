@@ -535,52 +535,114 @@ export class OpenAIAdapter implements AIVendorAdapter {
   async *streamResponse(
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
-    const { model, messages, systemPrompt, tools, maxTokens, temperature } =
-      options;
+    const { model, messages, systemPrompt, tools, store } = options;
 
-    // Use the new helper method to map messages
-    let apiMessages = this.mapToOpenAIChatMessages(messages);
+    const apiInput: OpenAIMessageInput[] = messages
+      .map((msg): OpenAIMessageInput | null => {
+        let role: "user" | "assistant" | "developer";
+        switch (msg.role) {
+          case "user":
+          case "assistant":
+            role = msg.role;
+            break;
+          case "system":
+            return null;
+          default:
+            role = "user";
+        }
+        if (!Array.isArray(msg.content)) return null;
 
-    if (systemPrompt) {
-      apiMessages.unshift({ role: "system", content: systemPrompt });
-    }
+        const apiContentParts = msg.content
+          .map((block): OpenAIMessageInput["content"][number] | null => {
+            if (block.type === "text") {
+              return {
+                type: role === "assistant" ? "output_text" : "input_text",
+                text: block.text,
+              };
+            }
+            if (
+              block.type === "image" &&
+              this.isVisionCapable &&
+              role === "user"
+            ) {
+              return { type: "input_image", image_url: block.url };
+            }
+            if (
+              block.type === "image_data" &&
+              this.isVisionCapable &&
+              role === "user"
+            ) {
+              return {
+                type: "input_image",
+                image_url: `data:${block.mimeType};base64,${block.base64Data}`,
+              };
+            }
+            return null;
+          })
+          .filter((part): part is OpenAIMessageContentPart => part !== null);
 
-    if (apiMessages.filter((m) => m.role !== "system").length === 0) {
+        if (apiContentParts.length === 0) return null;
+        return { role, content: apiContentParts };
+      })
+      .filter((msg): msg is OpenAIMessageInput => msg !== null);
+
+    if (apiInput.length === 0) {
       throw new Error(
-        "No valid user or assistant messages to send for streaming."
+        "No valid messages could be mapped for the OpenAI API request."
       );
     }
 
-    // Note: The 'reasoning' parameter from the Responses API is not standard in chat.completions.
-    // We will omit it for this streaming implementation to align with the standard API.
-    // The 'store' parameter is also specific to the Responses API.
+    let finalTools = tools ? [...tools] : [];
+    if (options.openaiImageGenerationOptions) {
+      const imageGenOptions = options.openaiImageGenerationOptions;
+      const imageGenerationTool: any = { type: "image_generation" };
+      if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
+        imageGenerationTool.quality = imageGenOptions.quality;
+      }
+      if (imageGenOptions.size && imageGenOptions.size !== "auto") {
+        imageGenerationTool.size = imageGenOptions.size;
+      }
+      if (imageGenOptions.background && imageGenOptions.background !== "auto") {
+        imageGenerationTool.background = imageGenOptions.background;
+      }
+      finalTools.push(imageGenerationTool);
+    }
+
+    const reasoningParam = this.getReasoningParam(options.budgetTokens);
 
     try {
-      const stream = await this.client.chat.completions.create({
-        model,
-        messages: apiMessages,
+      // First cast to unknown, then to AsyncIterable to satisfy TypeScript's type safety
+      const stream = (await this.client.responses.create({
+        model: model,
+        instructions: systemPrompt,
+        input: apiInput as any,
+        tools: finalTools,
+        store: store,
         stream: true,
-        tools: tools,
-        max_tokens: maxTokens,
-        temperature: temperature,
-      });
+        ...(reasoningParam as any),
+      })) as unknown as AsyncIterable<any>;
 
-      for await (const chunk of stream) {
-        // Handle text content delta
-        const textDelta = chunk.choices[0]?.delta?.content;
-        if (textDelta) {
+      for await (const event of stream) {
+        if (event.type === "output_text_delta" && event.text) {
           yield {
             type: "text",
-            text: textDelta,
+            text: event.text,
           };
-        }
-
-        // Handle tool calls delta
-        // A full implementation would aggregate these deltas and yield a complete ToolUseBlock.
-        // For now, we acknowledge their existence but focus on fixing text streaming.
-        const toolCallDeltas = chunk.choices[0]?.delta?.tool_calls;
-        if (toolCallDeltas) {
-          // This can be enhanced in a future task.
+        } else if (event.type === "image_generation_call" && event.result) {
+          yield {
+            type: "image_data",
+            mimeType: "image/png",
+            base64Data: event.result,
+          };
+        } else if (
+          event.type === "web_search_call" &&
+          event.status === "started"
+        ) {
+          yield {
+            type: "thinking",
+            thinking: "Performing a web search...",
+            signature: "openai",
+          };
         }
       }
     } catch (error: any) {

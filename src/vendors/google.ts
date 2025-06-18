@@ -445,32 +445,30 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       );
 
       for await (const chunk of responseStream) {
-        const text = chunk.text;
-        const data = chunk.data;
+        const candidate = chunk.candidates?.[0];
 
-        if (text) {
-          yield {
-            type: "text",
-            text: text,
-          };
+        if (!candidate || !candidate.content?.parts) {
+          continue;
         }
 
-        if (data) {
-          // The 'data' field is a Buffer. We need to determine its mimeType.
-          const { fileTypeFromBuffer } = await import("file-type");
-          const bufferData = Buffer.from(data as unknown as ArrayBuffer);
-          const type = await fileTypeFromBuffer(bufferData);
-
-          if (type && type.mime.startsWith("image/")) {
+        for (const part of candidate.content.parts) {
+          if ((part as any).thought === true) {
+            yield {
+              type: "thinking",
+              thinking: part.text || "",
+              signature: "google",
+            };
+          } else if (part.text) {
+            yield {
+              type: "text",
+              text: part.text,
+            };
+          } else if (part.inlineData) {
             yield {
               type: "image_data",
-              mimeType: type.mime,
-              base64Data: bufferData.toString("base64"),
+              mimeType: part.inlineData.mimeType || "image/png", // Default to png if undefined
+              base64Data: part.inlineData.data || "", // Default to empty string if undefined
             };
-          } else {
-            console.warn(
-              `Received a data chunk with an unknown or non-image mime type: ${type?.mime}. Skipping.`
-            );
           }
         }
       }

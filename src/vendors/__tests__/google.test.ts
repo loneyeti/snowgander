@@ -679,58 +679,83 @@ describe("GoogleAIAdapter", () => {
       ],
     };
 
-    it("should stream text and image content chunks correctly", async () => {
-      // 1. Setup mock stream
-      const mockImageData = Buffer.from("fake-png-data", "utf-8");
+    it("should stream text, image, and thinking content blocks from parts", async () => {
+      const mockImageBase64 = "fake-base64-png-data";
       async function* mockStream() {
-        yield { text: "This is the first part. " };
-        yield { text: "Here is an image:" };
-        yield { data: mockImageData };
-        yield { text: " The end." };
+        // Chunk with a thought
+        yield {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  { thought: true, text: "Okay, I will generate an image." },
+                ],
+              },
+            },
+          ],
+        };
+        // Chunk with text
+        yield {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [{ text: "Here is the image: " }],
+              },
+            },
+          ],
+        };
+        // Chunk with an image
+        yield {
+          candidates: [
+            {
+              content: {
+                role: "model",
+                parts: [
+                  {
+                    inlineData: {
+                      mimeType: "image/jpeg",
+                      data: mockImageBase64,
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        };
       }
       mockGenerateContentStream.mockReturnValue(mockStream());
 
-      const textAdapter = new GoogleAIAdapter(mockConfig, mockGeminiPro);
-
-      // 2. Call the method
-      const stream = textAdapter.streamResponse(basicOptions);
-
-      // 3. Collect results
+      const visionAdapter = new GoogleAIAdapter(mockConfig, {
+        ...mockGeminiProVision,
+        isThinking: true,
+      });
+      const stream = visionAdapter.streamResponse({
+        ...basicOptions,
+        model: mockGeminiProVision.apiName,
+      });
       const chunks: ContentBlock[] = [];
       for await (const chunk of stream) {
         chunks.push(chunk);
       }
 
-      // 4. Assert the results
-      expect(chunks.length).toBe(4);
-
+      expect(chunks.length).toBe(3);
       expect(chunks[0]).toEqual({
-        type: "text",
-        text: "This is the first part. ",
+        type: "thinking",
+        thinking: "Okay, I will generate an image.",
+        signature: "google",
       });
       expect(chunks[1]).toEqual({
         type: "text",
-        text: "Here is an image:",
+        text: "Here is the image: ",
       });
-
-      // The file-type mock will return image/png for our fake data
       expect(chunks[2]).toEqual({
         type: "image_data",
-        mimeType: "image/png",
-        base64Data: mockImageData.toString("base64"),
+        mimeType: "image/jpeg",
+        base64Data: mockImageBase64,
       });
-      expect(chunks[3]).toEqual({
-        type: "text",
-        text: " The end.",
-      });
-
-      // Verify the mock was called
       expect(mockGenerateContentStream).toHaveBeenCalledTimes(1);
-      expect(mockGenerateContentStream).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model: basicOptions.model,
-        })
-      );
     });
 
     it("should yield an error block if the stream fails", async () => {
