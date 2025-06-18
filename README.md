@@ -1,9 +1,3 @@
-Of course! Adding streaming support is a great feature, and it's important to document it clearly. I've updated the `README.md` to include the new streaming functionality, restructured the "how-to" section to be more logical for new users, and made some other minor improvements for clarity and correctness.
-
-Here is the updated `README.md` file:
-
----
-
 # Snowgander: AI Vendor Abstraction Layer
 
 [![npm version](https://badge.fury.io/js/snowgander.svg)](https://badge.fury.io/js/snowgander)
