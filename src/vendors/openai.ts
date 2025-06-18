@@ -212,12 +212,36 @@ export class OpenAIAdapter implements AIVendorAdapter {
     // Get the reasoning parameter using our new helper method
     const reasoningParam = this.getReasoningParam(options.budgetTokens);
 
+    // New code to be inserted starts here
+    let finalTools = tools ? [...tools] : [];
+    if (options.openaiImageGenerationOptions) {
+      const imageGenOptions = options.openaiImageGenerationOptions;
+
+      const imageGenerationTool: any = {
+        type: "image_generation",
+      };
+
+      if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
+        imageGenerationTool.quality = imageGenOptions.quality;
+      }
+      if (imageGenOptions.size && imageGenOptions.size !== "auto") {
+        imageGenerationTool.size = imageGenOptions.size;
+      }
+      if (imageGenOptions.background && imageGenOptions.background !== "auto") {
+        imageGenerationTool.background = imageGenOptions.background;
+      }
+
+      // Add the fully constructed tool to our tools array.
+      finalTools.push(imageGenerationTool);
+    }
+    // New code to be inserted ends here
+
     const response = await this.client.responses.create({
       model: model,
       instructions: systemPrompt,
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: apiInput as any,
-      tools: tools,
+      tools: finalTools, // <-- This line is changed
       store: store,
       // Use spread syntax to add the reasoning parameter if it exists.
       ...(reasoningParam as any),
@@ -315,7 +339,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
 
     // Handle image generation output if tools were used
-    if (tools?.some((tool) => tool.type === "image_generation")) {
+    if (finalTools?.some((tool) => tool.type === "image_generation")) {
       const imageGenerationOutput = response.output
         .filter((output) => (output as any).type === "image_generation_call")
         .filter((output) => typeof (output as any).result === "string");

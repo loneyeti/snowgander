@@ -196,6 +196,8 @@ describe("OpenAIAdapter", () => {
           // Expect mapped input structure
           { role: "user", content: [{ type: "input_text", text: "Hello!" }] },
         ],
+        store: undefined,
+        tools: [],
       });
     });
 
@@ -226,7 +228,12 @@ describe("OpenAIAdapter", () => {
       const expectedResponse: AIResponse = {
         role: "assistant",
         content: [{ type: "text", text: "Response text" }],
-        usage: expectedUsage,
+        usage: {
+          ...expectedUsage,
+          didGenerateImage: false,
+          didWebSearch: false,
+          webSearchCost: undefined,
+        },
       };
 
       const response = await adapter.generateResponse(basicOptions);
@@ -698,6 +705,131 @@ describe("OpenAIAdapter", () => {
   // Removed generateImage tests as this method was removed from OpenAIAdapter
 
   // Removed sendMCPChat tests as this method was removed from OpenAIAdapter
+
+  describe("Image Generation via Responses API", () => {
+    const imageGenModel: ModelConfig = {
+      apiName: "gpt-4.1-mini",
+      isVision: true,
+      isImageGeneration: true,
+      isThinking: false,
+      inputTokenCost: 10 / 1_000_000,
+      outputTokenCost: 30 / 1_000_000,
+    };
+
+    const basicMessages: Message[] = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Draw a cat" }],
+      },
+    ];
+
+    const mockImageApiResponse = {
+      id: "resp-img-gen-tool",
+      model: imageGenModel.apiName,
+      output_text: "Here is your cat image.",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Here is your cat image." }],
+        },
+        {
+          type: "image_generation_call",
+          id: "ig_abc",
+          status: "completed",
+          result: "base64-image-data-string",
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    };
+
+    beforeEach(() => {
+      // Ensure adapter is created with an image generation capable model
+      adapter = new OpenAIAdapter(mockConfig, imageGenModel);
+      // Directly assign the mock client
+      (adapter as any).client = mockClient;
+    });
+
+    it("should correctly construct the image_generation tool with specified options", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockImageApiResponse);
+
+      const options: AIRequestOptions = {
+        model: imageGenModel.apiName,
+        messages: basicMessages,
+        openaiImageGenerationOptions: {
+          quality: "high",
+          size: "1024x1536",
+          background: "transparent",
+        },
+      };
+
+      await adapter.generateResponse(options);
+
+      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+      const calledArgs = mockResponsesCreate.mock.calls[0][0];
+      expect(calledArgs.tools).toBeDefined();
+      expect(calledArgs.tools).toHaveLength(1);
+      expect(calledArgs.tools[0]).toEqual({
+        type: "image_generation",
+        quality: "high",
+        size: "1024x1536",
+        background: "transparent",
+      });
+    });
+
+    it("should omit options set to 'auto'", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockImageApiResponse);
+
+      const options: AIRequestOptions = {
+        model: imageGenModel.apiName,
+        messages: basicMessages,
+        openaiImageGenerationOptions: {
+          quality: "auto",
+          size: "auto",
+          background: "auto",
+        },
+      };
+
+      await adapter.generateResponse(options);
+
+      expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+      const calledArgs = mockResponsesCreate.mock.calls[0][0];
+      expect(calledArgs.tools[0]).toEqual({
+        type: "image_generation",
+      });
+      expect(calledArgs.tools[0]).not.toHaveProperty("quality");
+      expect(calledArgs.tools[0]).not.toHaveProperty("size");
+      expect(calledArgs.tools[0]).not.toHaveProperty("background");
+    });
+
+    it("should parse the response and create an ImageDataBlock", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockImageApiResponse);
+
+      const options: AIRequestOptions = {
+        model: imageGenModel.apiName,
+        messages: basicMessages,
+        openaiImageGenerationOptions: {
+          quality: "high",
+        },
+      };
+
+      const response = await adapter.generateResponse(options);
+
+      const textBlock = response.content.find((b) => b.type === "text");
+      const imageBlock = response.content.find(
+        (b) => b.type === "image_data"
+      ) as ImageDataBlock | undefined;
+
+      expect(textBlock).toBeDefined();
+      expect((textBlock as TextBlock).text).toBe("Here is your cat image.");
+      expect(imageBlock).toBeDefined();
+      expect(imageBlock?.mimeType).toBe("image/png");
+      expect(imageBlock?.base64Data).toBe("base64-image-data-string");
+    });
+  });
 });
 
 describe("OpenAIAdapter Reasoning Logic", () => {

@@ -274,8 +274,6 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
           openaiImageGenerationOptions.background === "auto"
             ? undefined
             : openaiImageGenerationOptions.background,
-        output_compression: openaiImageGenerationOptions.output_compression,
-        moderation: openaiImageGenerationOptions.moderation, // Pass moderation if provided
         // style is removed as it's DALL-E 3 specific and caused TS error
       };
 

@@ -170,16 +170,13 @@ export interface AIRequestOptions {
 // To be nested within AIRequestOptions
 
 export interface OpenAIImageGenerationOptions {
-  // prompt is usually taken from AIRequestOptions.prompt or messages
-  n?: number; // Number of images to generate (default 1)
-  quality?: "low" | "medium" | "high" | "auto"; // Quality setting (default auto)
-  // response_format is always b64_json for this adapter
-  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto"; // Image dimensions (default auto)
-  user?: string; // User identifier
-  background?: "transparent" | "opaque" | "auto"; // Background setting (default auto, png/webp only)
-  output_compression?: number; // Compression level (0-100, jpeg/webp only)
-  moderation?: "auto" | "low"; // Moderation strictness (default auto)
-  // style is DALL-E 3 specific, removed
+  n?: number; // Kept for compatibility with images.generate API
+  quality?: "low" | "medium" | "high" | "auto";
+  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto";
+  background?: "transparent" | "opaque" | "auto";
+  // The 'compression' option is for JPEG/WebP which we are not supporting yet.
+  // The 'format' option is for specifying output format which is also out of scope for now.
+  user?: string; // Kept for tracking/safety purposes
 }
 
 export interface OpenAIImageEditOptions {
