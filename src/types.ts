@@ -42,6 +42,7 @@ export interface TextBlock {
 export interface ImageBlock {
   type: "image";
   url: string;
+  generationId?: string;
 }
 
 // Define a specific block type for raw image data (e.g., from Google)
