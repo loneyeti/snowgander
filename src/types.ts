@@ -47,6 +47,7 @@ export interface ImageBlock {
 // Define a specific block type for raw image data (e.g., from Google)
 export interface ImageDataBlock {
   type: "image_data";
+  id?: string; // The ID of the image generation call, e.g., "ig_123"
   mimeType: string;
   base64Data: string;
 }
@@ -65,6 +66,11 @@ export interface ToolResultBlock {
 }
 
 // Define the ContentBlock union type *once*, including all variants
+export interface ImageGenerationCallBlock {
+  type: "image_generation_call";
+  id: string; // The ID of the image generation call, e.g., "ig_123"
+}
+
 export type ContentBlock =
   | ThinkingBlock
   | RedactedThinkingBlock
@@ -73,7 +79,8 @@ export type ContentBlock =
   | ImageDataBlock // Represents raw image data
   | ToolUseBlock
   | ToolResultBlock
-  | ErrorBlock; // Added ErrorBlock
+  | ErrorBlock // Added ErrorBlock
+  | ImageGenerationCallBlock; // Add the new type here
 
 export interface MCPAvailableTool {
   name: string;

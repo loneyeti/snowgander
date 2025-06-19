@@ -14,6 +14,7 @@ import {
   UsageResponse,
   ImageDataBlock, // Correctly import ImageDataBlock
   ImageBlock, // Correctly import ImageBlock
+  ImageGenerationCallBlock, // Import the new type
   // Import other ContentBlock types if needed for construction
 } from "../types";
 // Removed duplicate } from "../types";
@@ -191,9 +192,35 @@ export class OpenAIAdapter implements AIVendorAdapter {
     let didGenerateImage = false;
     let didUseWebSearch = false;
 
+    // NEW: Logic to handle image generation call references
+    let imageGenerationCallReference: {
+      type: "image_generation_call";
+      id: string;
+    } | null = null;
+    const filteredMessages = messages.filter((msg) => {
+      if (Array.isArray(msg.content)) {
+        const refBlockIndex = msg.content.findIndex(
+          (block) => block.type === "image_generation_call"
+        );
+        if (refBlockIndex !== -1) {
+          const refBlock = msg.content[
+            refBlockIndex
+          ] as ImageGenerationCallBlock;
+          imageGenerationCallReference = {
+            type: "image_generation_call",
+            id: refBlock.id,
+          };
+          // If the message only contained the reference block, we can filter out the whole message.
+          // If it also contained text, we might want to keep the text part. For simplicity, we'll assume it's separate for now.
+          return msg.content.length > 1; // Keep message if it has other content
+        }
+      }
+      return true;
+    });
+
     // Map internal Message format to OpenAI's responses.create input format
     // Use our custom types that reflect the expected API structure.
-    const apiInput: OpenAIMessageInput[] = messages
+    const apiInput: OpenAIMessageInput[] = filteredMessages
       .map((msg): OpenAIMessageInput | null => {
         // Map internal roles to OpenAI's expected input roles
         let role: "user" | "assistant" | "developer"; // Roles for input messages
@@ -319,11 +346,17 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
     // New code to be inserted ends here
 
+    // Build the final payload, including the image_generation_call reference if it exists
+    const finalApiPayload = [...apiInput];
+    if (imageGenerationCallReference) {
+      finalApiPayload.push(imageGenerationCallReference as any); // Add the reference to the payload
+    }
+
     const response = await this.client.responses.create({
       model: model,
       instructions: systemPrompt,
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
-      input: apiInput as any,
+      input: finalApiPayload as any,
       tools: finalTools, // <-- This line is changed
       store: store,
       // Use spread syntax to add the reasoning parameter if it exists.
@@ -430,6 +463,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       for (const imageCall of imageGenerationOutput) {
         responseBlock.push({
           type: "image_data",
+          id: (imageCall as any).id, // <-- CAPTURE THE ID HERE
           mimeType: "image/png", // Assuming PNG
           base64Data: (imageCall as any).result,
         });
