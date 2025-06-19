@@ -192,31 +192,29 @@ export class OpenAIAdapter implements AIVendorAdapter {
     let didGenerateImage = false;
     let didUseWebSearch = false;
 
-    // NEW: Logic to handle image generation call references
+    // <<< CHANGE START: Find imageGenerationCallReference first
     let imageGenerationCallReference: {
       type: "image_generation_call";
       id: string;
     } | null = null;
-    const filteredMessages = messages.filter((msg) => {
+    for (const msg of messages) {
       if (Array.isArray(msg.content)) {
-        const refBlockIndex = msg.content.findIndex(
-          (block) => block.type === "image_generation_call"
+        const refBlock = msg.content.find(
+          (block): block is ImageGenerationCallBlock =>
+            block.type === "image_generation_call"
         );
-        if (refBlockIndex !== -1) {
-          const refBlock = msg.content[
-            refBlockIndex
-          ] as ImageGenerationCallBlock;
+        if (refBlock) {
           imageGenerationCallReference = {
             type: "image_generation_call",
             id: refBlock.id,
           };
-          // If the message only contained the reference block, we can filter out the whole message.
-          // If it also contained text, we might want to keep the text part. For simplicity, we'll assume it's separate for now.
-          return msg.content.length > 1; // Keep message if it has other content
+          break; // Found it, no need to look further
         }
       }
-      return true;
-    });
+    }
+    // <<< CHANGE END
+
+    const filteredMessages = messages;
 
     // Map internal Message format to OpenAI's responses.create input format
     // Use our custom types that reflect the expected API structure.
@@ -260,6 +258,18 @@ export class OpenAIAdapter implements AIVendorAdapter {
                 // User messages (and fallbacks) use input_text
                 return { type: "input_text", text: block.text };
               }
+            } else if (
+              // <<< CHANGE START: Add conditions to prevent sending conflicting images during an edit
+              (block.type === "image" || block.type === "image_data") &&
+              imageGenerationCallReference
+              // <<< CHANGE END
+            ) {
+              // If we are performing an edit (imageGenerationCallReference is present),
+              // we must not send any other image data.
+              console.warn(
+                `Skipping '${block.type}' block because an 'image_generation_call' is present for an edit operation.`
+              );
+              return null;
             } else if (block.type === "image" && this.isVisionCapable) {
               // Map ImageBlock (URL) to input_image part, only for user role
               return {
@@ -283,7 +293,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
               return null;
             } else if (
               block.type === "thinking" ||
-              block.type === "redacted_thinking"
+              block.type === "redacted_thinking" ||
+              block.type === "image_generation_call"
             ) {
               return null; // Skip thinking blocks for OpenAI input
             }
