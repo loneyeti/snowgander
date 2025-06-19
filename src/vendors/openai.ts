@@ -565,6 +565,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
     const { model, messages, systemPrompt, tools, store } = options;
+    let currentImageGenerationId: string | null = null;
 
     const apiInput: OpenAIMessageInput[] = messages
       .map((msg): OpenAIMessageInput | null => {
@@ -662,10 +663,17 @@ export class OpenAIAdapter implements AIVendorAdapter {
             }
             break;
 
+          case "response.image_generation_call.created":
+            if (event.id) {
+              currentImageGenerationId = event.id;
+            }
+            break;
+
           case "response.image_generation_call.partial_image":
             if (event.partial_image_b64) {
               yield {
                 type: "image_data",
+                id: currentImageGenerationId, // Add the captured ID here
                 mimeType: "image/png", // The API consistently generates PNGs
                 base64Data: event.partial_image_b64,
               };

@@ -48,7 +48,7 @@ export interface ImageBlock {
 // Define a specific block type for raw image data (e.g., from Google)
 export interface ImageDataBlock {
   type: "image_data";
-  id?: string; // The ID of the image generation call, e.g., "ig_123"
+  id?: string | null; // The ID of the image generation call, e.g., "ig_123"
   mimeType: string;
   base64Data: string;
 }

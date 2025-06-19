@@ -242,6 +242,7 @@ describe("OpenAIAdapter", () => {
         { type: "text", text: "Here is your image: " },
         {
           type: "image_data",
+          id: null,
           mimeType: "image/png",
           base64Data: mockImageBase64,
         },
@@ -260,6 +261,11 @@ describe("OpenAIAdapter", () => {
       }
       mockResponsesCreate.mockResolvedValue(mockFailureStream());
 
+      // Temporarily suppress console.error for this specific test
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
       const receivedBlocks: ContentBlock[] = [];
       const stream = adapter.streamResponse(basicOptions);
       for await (const block of stream) {
@@ -273,6 +279,9 @@ describe("OpenAIAdapter", () => {
         "The request failed during streaming."
       );
       expect(errorBlock.privateMessage).toBe(failureMessage);
+
+      // Restore the original console.error function
+      consoleErrorSpy.mockRestore();
     });
   });
 });
