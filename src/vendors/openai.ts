@@ -233,35 +233,18 @@ export class OpenAIAdapter implements AIVendorAdapter {
                 // User messages (and fallbacks) use input_text
                 return { type: "input_text", text: block.text };
               }
-            } else if (
-              block.type === "image" &&
-              this.isVisionCapable &&
-              role === "user"
-            ) {
+            } else if (block.type === "image" && this.isVisionCapable) {
               // Map ImageBlock (URL) to input_image part, only for user role
               return {
                 type: "input_image",
                 image_url: block.url,
               };
-            } else if (
-              block.type === "image_data" &&
-              this.isVisionCapable &&
-              role === "user"
-            ) {
+            } else if (block.type === "image_data" && this.isVisionCapable) {
               // Map ImageDataBlock (base64) to data URL for input_image part, only for user role
               return {
                 type: "input_image",
                 image_url: `data:${block.mimeType};base64,${block.base64Data}`,
               };
-            } else if (
-              (block.type === "image" || block.type === "image_data") &&
-              role !== "user"
-            ) {
-              // Images are only expected in user messages for this API structure
-              console.warn(
-                `Image block found in non-user message (role: ${role}). Skipping image.`
-              );
-              return null;
             } else if (
               (block.type === "image" || block.type === "image_data") &&
               !this.isVisionCapable
