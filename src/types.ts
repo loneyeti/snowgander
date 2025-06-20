@@ -183,6 +183,8 @@ export interface AIRequestOptions {
   openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
   // Optional: Specific options for OpenAI Image Editing API
   openaiImageEditOptions?: OpenAIImageEditOptions;
+  // New: Specific flag to control image generation per request
+  useImageGeneration?: boolean;
 }
 
 // --- OpenAI Image API Specific Options ---
