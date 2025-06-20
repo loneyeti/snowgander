@@ -354,6 +354,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
 
       // Add the fully constructed tool to our tools array.
       finalTools.push(imageGenerationTool);
+      console.log(
+        "[SNOWGANDER DIAGNOSTIC] - generateResponse - Sending tools to OpenAI:",
+        JSON.stringify(finalTools, null, 2)
+      );
     }
     // New code to be inserted ends here
 
@@ -625,7 +629,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
     let finalTools = tools ? [...tools] : [];
     if (options.openaiImageGenerationOptions) {
       const imageGenOptions = options.openaiImageGenerationOptions;
-      const imageGenerationTool: any = { type: "image_generation" };
+      const imageGenerationTool: any = {
+        type: "image_generation",
+        partial_images: 1,
+      };
       if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
         imageGenerationTool.quality = imageGenOptions.quality;
       }
@@ -636,6 +643,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
         imageGenerationTool.background = imageGenOptions.background;
       }
       finalTools.push(imageGenerationTool);
+      console.log(
+        "[SNOWGANDER DIAGNOSTIC] - streamResponse - Sending tools to OpenAI:",
+        JSON.stringify(finalTools, null, 2)
+      );
     }
 
     const reasoningParam = this.getReasoningParam(options.budgetTokens);
@@ -653,6 +664,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       })) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
+        console.log("[SNOWGANDER DIAGNOSTIC] Received event type:", event.type);
         switch (event.type) {
           case "response.output_text.delta":
             if (event.delta) {
@@ -663,13 +675,18 @@ export class OpenAIAdapter implements AIVendorAdapter {
             }
             break;
 
-          case "response.image_generation_call.created":
-            if (event.id) {
-              currentImageGenerationId = event.id;
+          case "response.image_generation_call.in_progress":
+            console.log(`Image in progress: ${JSON.stringify(event)}`);
+            if (event.item_id) {
+              currentImageGenerationId = event.item_id;
+              console.log(
+                `[SNOWGANDER] Captured Image Generation ID: ${currentImageGenerationId}`
+              );
             }
             break;
 
           case "response.image_generation_call.partial_image":
+            console.log(`Image Partial Received: Item id: ${event.item_id}`);
             if (event.partial_image_b64) {
               yield {
                 type: "image_data",
