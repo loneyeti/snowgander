@@ -377,10 +377,17 @@ describe("AnthropicAdapter", () => {
       messages: basicMessages,
     };
 
-    it("should stream text deltas as TextBlocks", async () => {
+    it("should handle a full SSE stream for a simple text response", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
 
+      // Mock the full, realistic event stream from Anthropic
       async function* mockStream() {
+        yield { type: "message_start", message: { id: "msg_123" } };
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        };
         yield {
           type: "content_block_delta",
           index: 0,
@@ -389,13 +396,10 @@ describe("AnthropicAdapter", () => {
         yield {
           type: "content_block_delta",
           index: 0,
-          delta: { type: "text_delta", text: " " },
+          delta: { type: "text_delta", text: " World!" },
         };
-        yield {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "World!" },
-        };
+        yield { type: "content_block_stop", index: 0 };
+        yield { type: "message_stop" };
       }
 
       mockMessagesCreate.mockResolvedValue(mockStream());
@@ -407,73 +411,44 @@ describe("AnthropicAdapter", () => {
       }
 
       expect(mockMessagesCreate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          stream: true,
-        })
+        expect.objectContaining({ stream: true })
       );
 
+      // Verify the output chunks are correct
       expect(chunks).toEqual([
+        { type: "meta", responseId: "msg_123" }, // First, we get the meta block
         { type: "text", text: "Hello" },
-        { type: "text", text: " " },
-        { type: "text", text: "World!" },
+        { type: "text", text: " World!" },
       ]);
     });
 
-    it("should stream thinking deltas as ThinkingBlocks", async () => {
-      const { mockMessagesCreate } = getMockAnthropicClient();
-      const optionsWithThinking: AIRequestOptions = {
-        ...basicOptions,
-        thinkingMode: true,
-        budgetTokens: 100,
-      };
-
-      async function* mockStream() {
-        yield {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "thinking_delta", thinking: "Let me think... " },
-        };
-        yield {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "thinking_delta", thinking: "Okay, I have a plan." },
-        };
-      }
-
-      mockMessagesCreate.mockResolvedValue(mockStream());
-
-      const stream = adapter.streamResponse(optionsWithThinking);
-      const chunks: ContentBlock[] = [];
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-
-      expect(chunks).toEqual([
-        {
-          type: "thinking",
-          thinking: "Let me think... ",
-          signature: "anthropic",
-        },
-        {
-          type: "thinking",
-          thinking: "Okay, I have a plan.",
-          signature: "anthropic",
-        },
-      ]);
-    });
-
-    it("should handle a mixed stream of thinking and text", async () => {
+    it("should handle a mixed stream of thinking and text blocks", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
       const optionsWithThinking: AIRequestOptions = {
         ...basicOptions,
         thinkingMode: true,
       };
 
+      // Mock a stream with a thinking block followed by a text block
       async function* mockStream() {
+        yield { type: "message_start", message: { id: "msg_456" } };
+        // Thinking block
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "thinking", thinking: "" },
+        };
         yield {
           type: "content_block_delta",
           index: 0,
           delta: { type: "thinking_delta", thinking: "Analyzing... " },
+        };
+        yield { type: "content_block_stop", index: 0 };
+        // Text block
+        yield {
+          type: "content_block_start",
+          index: 1,
+          content_block: { type: "text", text: "" },
         };
         yield {
           type: "content_block_delta",
@@ -485,6 +460,8 @@ describe("AnthropicAdapter", () => {
           index: 1,
           delta: { type: "text_delta", text: "the answer." },
         };
+        yield { type: "content_block_stop", index: 1 };
+        yield { type: "message_stop" };
       }
 
       mockMessagesCreate.mockResolvedValue(mockStream());
@@ -496,6 +473,7 @@ describe("AnthropicAdapter", () => {
       }
 
       expect(chunks).toEqual([
+        { type: "meta", responseId: "msg_456" },
         {
           type: "thinking",
           thinking: "Analyzing... ",
@@ -506,21 +484,74 @@ describe("AnthropicAdapter", () => {
       ]);
     });
 
-    it("should ignore tool use deltas and log a warning", async () => {
+    it("should yield an error block if the stream throws an error", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+      const consoleErrorSpy = jest.spyOn(console, "error").mockImplementation();
+      const testError = new Error("Stream connection failed");
+
+      mockMessagesCreate.mockRejectedValue(testError);
+
+      const stream = adapter.streamResponse(basicOptions);
+      const chunks: ContentBlock[] = [];
+
+      // We expect the function to throw, so we wrap the iteration in a try/catch
+      try {
+        for await (const chunk of stream) {
+          chunks.push(chunk);
+        }
+      } catch (e) {
+        expect(e).toBe(testError);
+      }
+
+      // The adapter should yield a structured error block before re-throwing
+      expect(chunks).toEqual([
+        {
+          type: "error",
+          publicMessage: "An error occurred while streaming from the provider.",
+          privateMessage: "Stream connection failed",
+        },
+      ]);
+
+      // And it should log the error server-side
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Error during Anthropic stream:",
+        testError
+      );
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("should accumulate and yield a complete tool_use block on content_block_stop", async () => {
       const { mockMessagesCreate } = getMockAnthropicClient();
       const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
 
+      // Mock a stream with a tool_use block
       async function* mockStream() {
+        yield { type: "message_start", message: { id: "msg_789" } };
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool_abc",
+            name: "get_weather",
+            input: {},
+          },
+        };
         yield {
           type: "content_block_delta",
           index: 0,
-          delta: { type: "input_json_delta", partial_json: '{"tool":' },
+          delta: { type: "input_json_delta", partial_json: '{"location":' },
         };
         yield {
           type: "content_block_delta",
-          index: 1,
-          delta: { type: "text_delta", text: "Some text" },
+          index: 0,
+          delta: {
+            type: "input_json_delta",
+            partial_json: ' "San Francisco"}',
+          },
         };
+        yield { type: "content_block_stop", index: 0 };
+        yield { type: "message_stop" };
       }
 
       mockMessagesCreate.mockResolvedValue(mockStream());
@@ -531,11 +562,19 @@ describe("AnthropicAdapter", () => {
         chunks.push(chunk);
       }
 
-      expect(chunks).toEqual([{ type: "text", text: "Some text" }]);
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("tool_use delta (input_json_delta)")
-      );
+      // The final output should contain a single, complete tool_use block
+      expect(chunks).toEqual([
+        { type: "meta", responseId: "msg_789" },
+        {
+          type: "tool_use",
+          id: "tool_abc",
+          name: "get_weather",
+          input: '{"location": "San Francisco"}',
+        },
+      ]);
 
+      // Ensure no warnings were logged for tool use, as it's now handled
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
       consoleWarnSpy.mockRestore();
     });
   });

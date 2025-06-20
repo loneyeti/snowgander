@@ -26,6 +26,7 @@ export type {
   OpenAIImageEditOptions,
   ImageGenerationResponse,
   ImageEditResponse,
+  MetaBlock,
 } from "./types";
 
 // Optionally export individual adapters if direct use is needed,

@@ -72,6 +72,12 @@ export interface ImageGenerationCallBlock {
   id: string; // The ID of the image generation call, e.g., "ig_123"
 }
 
+export interface MetaBlock {
+  type: "meta";
+  responseId: string;
+  usage?: UsageResponse;
+}
+
 export type ContentBlock =
   | ThinkingBlock
   | RedactedThinkingBlock
@@ -81,7 +87,8 @@ export type ContentBlock =
   | ToolUseBlock
   | ToolResultBlock
   | ErrorBlock // Added ErrorBlock
-  | ImageGenerationCallBlock; // Add the new type here
+  | ImageGenerationCallBlock
+  | MetaBlock; // Add MetaBlock here
 
 export interface MCPAvailableTool {
   name: string;
@@ -94,6 +101,7 @@ export interface ChatResponse {
   role: string;
   content: ContentBlock[];
   usage?: UsageResponse;
+  responseId?: string; // Add this line
 }
 
 // Represents the state/data needed for a chat interaction
@@ -106,6 +114,7 @@ export interface Chat {
   maxTokens: number | null; // Max tokens for the response
   budgetTokens: number | null; // Token budget for thinking mode
   systemPrompt?: string; // The actual system prompt text from the persona
+  previousResponseId?: string; // Add this line
   mcpAvailableTools?: MCPAvailableTool[];
   // Options specific to OpenAI Image Adapter, passed via Chat
   openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
@@ -141,6 +150,7 @@ export interface UsageResponse {
 export interface AIResponse {
   role: string; // Typically 'assistant'
   content: ContentBlock[]; // The generated content
+  responseId?: string; // Add this line
   // Optionally include usage stats if adapters provide them
   usage?: UsageResponse;
 }
@@ -164,6 +174,7 @@ export interface AIRequestOptions {
   thinkingMode?: boolean; // Flag to enable thinking mode (if supported)
   budgetTokens?: number; // Token budget for thinking mode
   prompt?: string; // The primary user prompt (often redundant if included in messages)
+  previousResponseId?: string; // Add this line
   // Generic tools array for API calls
   tools?: any[];
   // Data retention control

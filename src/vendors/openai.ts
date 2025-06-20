@@ -187,7 +187,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const { model, messages, systemPrompt, tools, store } = options;
+    const { model, messages, systemPrompt, tools, store, previousResponseId } =
+      options;
     // Flags to track tool usage from the response
     let didGenerateImage = false;
     let didUseWebSearch = false;
@@ -370,6 +371,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     const response = await this.client.responses.create({
       model: model,
       instructions: systemPrompt,
+      previous_response_id: previousResponseId, // <-- ADDED
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: finalApiPayload as any,
       tools: finalTools, // <-- This line is changed
@@ -557,6 +559,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       role: response.role,
       content: response.content,
       usage: response.usage,
+      responseId: response.responseId, // Pass the new ID back
     };
   }
 
@@ -568,8 +571,11 @@ export class OpenAIAdapter implements AIVendorAdapter {
   async *streamResponse(
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
-    const { model, messages, systemPrompt, tools, store } = options;
+    const { model, messages, systemPrompt, tools, store, previousResponseId } =
+      options;
     let currentImageGenerationId: string | null = null;
+    let finalResponseId: string | undefined = undefined;
+    let finalUsage: UsageResponse | undefined = undefined;
 
     const apiInput: OpenAIMessageInput[] = messages
       .map((msg): OpenAIMessageInput | null => {
@@ -656,6 +662,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       const stream = (await this.client.responses.create({
         model: model,
         instructions: systemPrompt,
+        previous_response_id: previousResponseId, // Pass state ID
         input: apiInput as any,
         tools: finalTools,
         store: store,
@@ -705,6 +712,46 @@ export class OpenAIAdapter implements AIVendorAdapter {
             };
             break;
 
+          case "response.completed": // Capture final data
+            finalResponseId = event.response.id;
+            if (
+              event.response.usage &&
+              this.inputTokenCost &&
+              this.outputTokenCost
+            ) {
+              const didGenerateImage = event.response.output?.some(
+                (o: any) => o.type === "image_generation_call"
+              );
+              const didWebSearch = event.response.output?.some(
+                (o: any) => o.type === "web_search_call"
+              );
+              const inputCost = computeResponseCost(
+                event.response.usage.input_tokens,
+                this.inputTokenCost
+              );
+              const outputCostPerToken =
+                didGenerateImage && this.modelConfig.imageOutputTokenCost
+                  ? this.modelConfig.imageOutputTokenCost
+                  : this.outputTokenCost;
+              const outputCost = computeResponseCost(
+                event.response.usage.output_tokens,
+                outputCostPerToken
+              );
+              const webSearchCost =
+                didWebSearch && this.modelConfig.webSearchCost
+                  ? this.modelConfig.webSearchCost
+                  : 0;
+              finalUsage = {
+                inputCost,
+                outputCost,
+                webSearchCost: webSearchCost > 0 ? webSearchCost : undefined,
+                didGenerateImage,
+                didWebSearch,
+                totalCost: inputCost + outputCost + webSearchCost,
+              };
+            }
+            break;
+
           case "response.failed":
             const errorMessage =
               event.response?.error?.message || "Response failed in stream.";
@@ -716,6 +763,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
             };
             return; // Terminate the generator on a failure event
         }
+      }
+      if (finalResponseId) {
+        // Yield final metadata block after loop
+        yield { type: "meta", responseId: finalResponseId, usage: finalUsage };
       }
     } catch (error: any) {
       console.error("Error during OpenAI stream:", error);

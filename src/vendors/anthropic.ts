@@ -286,6 +286,8 @@ export class AnthropicAdapter implements AIVendorAdapter {
     );
   }
 
+  // snowgander/src/vendors/anthropic.ts
+
   async *streamResponse(
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
@@ -299,7 +301,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       tools,
     } = options;
 
-    // This message formatting logic is copied from generateResponse
+    // This message formatting logic is copied from generateResponse and is correct.
     const formattedMessages = messages.map((msg) => {
       const role =
         msg.role === "assistant" ? ("assistant" as const) : ("user" as const);
@@ -423,34 +425,120 @@ export class AnthropicAdapter implements AIVendorAdapter {
         ...(tools && { tools }),
       });
 
+      // --- START: NEW STATE MANAGEMENT LOGIC ---
+      // This state object will hold the partial content blocks as they are being built.
+      // We use a map with the block 'index' as the key for easy updates.
+      const partialBlocks = new Map<number, ContentBlock>();
+      // --- END: NEW STATE MANAGEMENT LOGIC ---
+
       for await (const event of stream) {
-        if (event.type === "content_block_delta") {
-          if (event.delta.type === "text_delta" && event.delta.text) {
+        // We now process every event type, not just content_block_delta.
+        switch (event.type) {
+          case "message_start":
+            // Yield a meta block with the response ID so the client can track it.
             yield {
-              type: "text",
-              text: event.delta.text,
+              type: "meta",
+              responseId: event.message.id,
             };
-          } else if (
-            event.delta.type === "thinking_delta" &&
-            event.delta.thinking
-          ) {
-            yield {
-              type: "thinking",
-              thinking: event.delta.thinking,
-              signature: "anthropic",
-            };
-          } else if (event.delta.type === "input_json_delta") {
-            // For now, we are not handling tool use streaming to keep this simple.
-            // A console warning is sufficient.
-            console.warn(
-              "Received tool_use delta (input_json_delta), but streaming for this is not yet implemented."
-            );
+            break;
+
+          case "content_block_start": {
+            // A new block is starting. We create a placeholder for it in our map.
+            // This is crucial because it tells us the block's 'type' before we get content.
+            const { index, content_block } = event;
+            switch (content_block.type) {
+              case "text":
+                partialBlocks.set(index, {
+                  type: "text",
+                  text: "",
+                });
+                break;
+              case "thinking":
+                partialBlocks.set(index, {
+                  type: "thinking",
+                  thinking: "",
+                  signature: "anthropic", // Add our signature
+                });
+                break;
+              case "tool_use":
+                // For tool_use, we initialize the input as an empty string.
+                partialBlocks.set(index, {
+                  type: "tool_use",
+                  id: content_block.id,
+                  name: content_block.name,
+                  input: "",
+                });
+                break;
+            }
+            break;
           }
+
+          case "content_block_delta": {
+            // A chunk of data has arrived for a specific block.
+            const { index, delta } = event;
+            const block = partialBlocks.get(index);
+
+            if (!block) break; // Should not happen in a valid stream
+
+            switch (delta.type) {
+              case "text_delta":
+                // For text, we can yield the delta immediately for real-time streaming.
+                // The frontend will just append this text.
+                if (block.type === "text") {
+                  yield { type: "text", text: delta.text };
+                }
+                break;
+              case "thinking_delta":
+                // Same for thinking, we yield the delta immediately.
+                if (block.type === "thinking") {
+                  yield {
+                    type: "thinking",
+                    thinking: delta.thinking,
+                    signature: "anthropic",
+                  };
+                }
+                break;
+              case "input_json_delta":
+                // For tool use, we do NOT yield the partial JSON.
+                // It's not useful to the frontend. Instead, we accumulate it.
+                if (block.type === "tool_use") {
+                  block.input += delta.partial_json;
+                }
+                break;
+            }
+            break;
+          }
+
+          case "content_block_stop": {
+            // A block has finished. This is our chance to yield the complete tool_use block.
+            const { index } = event;
+            const block = partialBlocks.get(index);
+            if (block && block.type === "tool_use") {
+              // Now that the JSON is complete (or as complete as the model sends it),
+              // we yield the full ToolUseBlock.
+              yield block;
+            }
+            break;
+          }
+
+          case "message_delta":
+          case "message_stop":
+            break;
         }
       }
     } catch (error) {
       console.error("Error during Anthropic stream:", error);
-      throw error;
+      // Yield a structured error that the frontend can safely render.
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : "An unknown stream error occurred";
+      yield {
+        type: "error",
+        publicMessage: "An error occurred while streaming from the provider.",
+        privateMessage: errorMessage,
+      };
+      throw error; // Also re-throw to ensure the server logs it.
     }
   }
 
