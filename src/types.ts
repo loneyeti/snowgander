@@ -158,6 +158,7 @@ export interface AIResponse {
 // --- Error Block Type ---
 export interface ErrorBlock {
   type: "error";
+  code?: string | undefined;
   publicMessage: string; // Safe to show to the end-user
   privateMessage: string; // Detailed error for logging/debugging
 }

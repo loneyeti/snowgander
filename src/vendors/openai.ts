@@ -355,10 +355,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
 
       // Add the fully constructed tool to our tools array.
       finalTools.push(imageGenerationTool);
-      console.log(
-        "[SNOWGANDER DIAGNOSTIC] - generateResponse - Sending tools to OpenAI:",
-        JSON.stringify(finalTools, null, 2)
-      );
+      //console.log(
+      //  "[SNOWGANDER DIAGNOSTIC] - generateResponse - Sending tools to OpenAI:",
+      //  JSON.stringify(finalTools, null, 2)
+      //);
     }
     // New code to be inserted ends here
 
@@ -406,10 +406,14 @@ export class OpenAIAdapter implements AIVendorAdapter {
           ? this.modelConfig.imageOutputTokenCost
           : this.outputTokenCost;
 
-      const outputCost = computeResponseCost(
+      let outputCost = computeResponseCost(
         response.usage.output_tokens,
         outputCostPerToken
       );
+
+      // Until OpenAI can provide the actual cost of the transaction
+      // we must hard code in the most expensive image generation
+      // outputCost = didGenerateImage ? outputCost + 0.25 : outputCost;
 
       // Check for web search flat fee
       const webSearchCost =
@@ -649,10 +653,12 @@ export class OpenAIAdapter implements AIVendorAdapter {
         imageGenerationTool.background = imageGenOptions.background;
       }
       finalTools.push(imageGenerationTool);
+      /*
       console.log(
         "[SNOWGANDER DIAGNOSTIC] - streamResponse - Sending tools to OpenAI:",
         JSON.stringify(finalTools, null, 2)
       );
+      */
     }
 
     const reasoningParam = this.getReasoningParam(options.budgetTokens);
@@ -671,7 +677,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       })) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
-        console.log("[SNOWGANDER DIAGNOSTIC] Received event type:", event.type);
+        //console.log("[SNOWGANDER DIAGNOSTIC] Received event type:", event.type);
         switch (event.type) {
           case "response.output_text.delta":
             if (event.delta) {
@@ -686,9 +692,11 @@ export class OpenAIAdapter implements AIVendorAdapter {
             console.log(`Image in progress: ${JSON.stringify(event)}`);
             if (event.item_id) {
               currentImageGenerationId = event.item_id;
+              /*
               console.log(
                 `[SNOWGANDER] Captured Image Generation ID: ${currentImageGenerationId}`
               );
+              */
             }
             break;
 
@@ -733,10 +741,13 @@ export class OpenAIAdapter implements AIVendorAdapter {
                 didGenerateImage && this.modelConfig.imageOutputTokenCost
                   ? this.modelConfig.imageOutputTokenCost
                   : this.outputTokenCost;
-              const outputCost = computeResponseCost(
+              let outputCost = computeResponseCost(
                 event.response.usage.output_tokens,
                 outputCostPerToken
               );
+              // Until OpenAI can provide the actual cost of the transaction
+              // we must hard code in the most expensive image generation
+              // outputCost = didGenerateImage ? outputCost + 0.25 : outputCost;
               const webSearchCost =
                 didWebSearch && this.modelConfig.webSearchCost
                   ? this.modelConfig.webSearchCost

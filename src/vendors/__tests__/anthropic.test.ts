@@ -382,7 +382,10 @@ describe("AnthropicAdapter", () => {
 
       // Mock the full, realistic event stream from Anthropic
       async function* mockStream() {
-        yield { type: "message_start", message: { id: "msg_123" } };
+        yield {
+          type: "message_start",
+          message: { id: "msg_123", usage: { input_tokens: 10 } },
+        };
         yield {
           type: "content_block_start",
           index: 0,
@@ -399,6 +402,11 @@ describe("AnthropicAdapter", () => {
           delta: { type: "text_delta", text: " World!" },
         };
         yield { type: "content_block_stop", index: 0 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { output_tokens: 5 },
+        };
         yield { type: "message_stop" };
       }
 
@@ -414,11 +422,28 @@ describe("AnthropicAdapter", () => {
         expect.objectContaining({ stream: true })
       );
 
-      // Verify the output chunks are correct
+      // Verify the output chunks are correct, with the meta block now at the end
+      const expectedInputCost = computeResponseCost(
+        10,
+        adapter.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        5,
+        adapter.outputTokenCost!
+      );
+
       expect(chunks).toEqual([
-        { type: "meta", responseId: "msg_123" }, // First, we get the meta block
         { type: "text", text: "Hello" },
         { type: "text", text: " World!" },
+        {
+          type: "meta",
+          responseId: "msg_123",
+          usage: {
+            inputCost: expectedInputCost,
+            outputCost: expectedOutputCost,
+            totalCost: expectedInputCost + expectedOutputCost,
+          },
+        },
       ]);
     });
 
@@ -431,7 +456,10 @@ describe("AnthropicAdapter", () => {
 
       // Mock a stream with a thinking block followed by a text block
       async function* mockStream() {
-        yield { type: "message_start", message: { id: "msg_456" } };
+        yield {
+          type: "message_start",
+          message: { id: "msg_456", usage: { input_tokens: 15 } },
+        };
         // Thinking block
         yield {
           type: "content_block_start",
@@ -461,6 +489,11 @@ describe("AnthropicAdapter", () => {
           delta: { type: "text_delta", text: "the answer." },
         };
         yield { type: "content_block_stop", index: 1 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { output_tokens: 10 },
+        };
         yield { type: "message_stop" };
       }
 
@@ -472,8 +505,16 @@ describe("AnthropicAdapter", () => {
         chunks.push(chunk);
       }
 
+      const expectedInputCost = computeResponseCost(
+        15,
+        adapter.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        10,
+        adapter.outputTokenCost!
+      );
+
       expect(chunks).toEqual([
-        { type: "meta", responseId: "msg_456" },
         {
           type: "thinking",
           thinking: "Analyzing... ",
@@ -481,6 +522,15 @@ describe("AnthropicAdapter", () => {
         },
         { type: "text", text: "Here is " },
         { type: "text", text: "the answer." },
+        {
+          type: "meta",
+          responseId: "msg_456",
+          usage: {
+            inputCost: expectedInputCost,
+            outputCost: expectedOutputCost,
+            totalCost: expectedInputCost + expectedOutputCost,
+          },
+        },
       ]);
     });
 
@@ -526,7 +576,10 @@ describe("AnthropicAdapter", () => {
 
       // Mock a stream with a tool_use block
       async function* mockStream() {
-        yield { type: "message_start", message: { id: "msg_789" } };
+        yield {
+          type: "message_start",
+          message: { id: "msg_789", usage: { input_tokens: 20 } },
+        };
         yield {
           type: "content_block_start",
           index: 0,
@@ -551,6 +604,11 @@ describe("AnthropicAdapter", () => {
           },
         };
         yield { type: "content_block_stop", index: 0 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { output_tokens: 15 },
+        };
         yield { type: "message_stop" };
       }
 
@@ -562,14 +620,31 @@ describe("AnthropicAdapter", () => {
         chunks.push(chunk);
       }
 
-      // The final output should contain a single, complete tool_use block
+      const expectedInputCost = computeResponseCost(
+        20,
+        adapter.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        15,
+        adapter.outputTokenCost!
+      );
+
+      // The final output should contain the tool_use block followed by meta with usage
       expect(chunks).toEqual([
-        { type: "meta", responseId: "msg_789" },
         {
           type: "tool_use",
           id: "tool_abc",
           name: "get_weather",
           input: '{"location": "San Francisco"}',
+        },
+        {
+          type: "meta",
+          responseId: "msg_789",
+          usage: {
+            inputCost: expectedInputCost,
+            outputCost: expectedOutputCost,
+            totalCost: expectedInputCost + expectedOutputCost,
+          },
         },
       ]);
 

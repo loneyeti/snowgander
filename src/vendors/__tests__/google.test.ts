@@ -12,7 +12,7 @@ import {
   AIResponse,
 } from "../../types";
 import { GoogleGenAI } from "@google/genai";
-import { getImageDataFromUrl } from "../../utils";
+import { getImageDataFromUrl, computeResponseCost } from "../../utils";
 
 // --- Define Mocks FIRST ---
 const mockGenerateContent = jest.fn();
@@ -48,16 +48,16 @@ describe("GoogleAIAdapter", () => {
     isVision: true,
     isImageGeneration: false,
     isThinking: false,
-    inputTokenCost: 0.125 / 1_000_000,
-    outputTokenCost: 0.375 / 1_000_000,
+    inputTokenCost: 0.125,
+    outputTokenCost: 0.375,
   };
   const mockGeminiPro: ModelConfig = {
     apiName: "gemini-pro",
     isVision: false,
     isImageGeneration: false,
     isThinking: false,
-    inputTokenCost: 0.125 / 1_000_000,
-    outputTokenCost: 0.375 / 1_000_000,
+    inputTokenCost: 0.125,
+    outputTokenCost: 0.375,
   };
 
   beforeAll(async () => {
@@ -169,6 +169,79 @@ describe("GoogleAIAdapter", () => {
           ],
         })
       );
+    });
+
+    it("should yield content chunks and a final meta block with usage", async () => {
+      // 1. Mock the stream from the Google SDK
+      async function* mockStreamWithUsage() {
+        // First chunk: just text
+        yield {
+          candidates: [{ content: { parts: [{ text: "This " }] } }],
+        };
+        // Second chunk: more text
+        yield {
+          candidates: [{ content: { parts: [{ text: "is a " }] } }],
+        };
+        // Final chunk: last bit of text AND the usage metadata
+        yield {
+          candidates: [{ content: { parts: [{ text: "test." }] } }],
+          usageMetadata: {
+            promptTokenCount: 15,
+            candidatesTokenCount: 25,
+            totalTokenCount: 40,
+          },
+        };
+      }
+      mockGenerateContentStream.mockReturnValue(mockStreamWithUsage());
+
+      // Because the adapter is initialized with mockGeminiProVision in beforeEach,
+      // we need to use its costs for the assertion.
+      const testAdapter = new GoogleAIAdapter(mockConfig, mockGeminiProVision);
+
+      // 2. Call the adapter's streamResponse method
+      const stream = testAdapter.streamResponse({
+        ...basicOptions,
+        model: mockGeminiProVision.apiName,
+      });
+
+      // 3. Collect all the chunks yielded by our adapter
+      const receivedBlocks: ContentBlock[] = [];
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+
+      // 4. Assert the results
+      // We expect 3 text blocks and 1 meta block
+      expect(receivedBlocks).toHaveLength(4);
+
+      // Check the content blocks
+      expect(receivedBlocks[0]).toEqual({ type: "text", text: "This " });
+      expect(receivedBlocks[1]).toEqual({ type: "text", text: "is a " });
+      expect(receivedBlocks[2]).toEqual({ type: "text", text: "test." });
+
+      // --- THIS IS THE CORRECTED PART ---
+      // Check the final meta block
+      const metaBlock = receivedBlocks[3];
+      expect(metaBlock.type).toBe("meta");
+      expect((metaBlock as any).responseId).toBeDefined();
+
+      // Calculate expected costs using the helper function
+      const expectedInputCost = computeResponseCost(
+        15,
+        testAdapter.inputTokenCost!
+      );
+      const expectedOutputCost = computeResponseCost(
+        25,
+        testAdapter.outputTokenCost!
+      );
+      const expectedTotalCost = expectedInputCost + expectedOutputCost;
+
+      // Test the usage object properties individually for floating-point precision
+      const receivedUsage = (metaBlock as any).usage;
+      expect(receivedUsage).toBeDefined();
+      expect(receivedUsage.inputCost).toBeCloseTo(expectedInputCost);
+      expect(receivedUsage.outputCost).toBeCloseTo(expectedOutputCost);
+      expect(receivedUsage.totalCost).toBeCloseTo(expectedTotalCost);
     });
 
     // THIS TEST IS REMOVED as it is now redundant.

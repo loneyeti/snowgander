@@ -62,6 +62,8 @@ describe("OpenRouterAdapter", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // FIX: Reset the mock implementation before each test to prevent pollution.
+    mockComputeResponseCost.mockReset();
     adapter = new OpenRouterAdapter(mockVendorConfig, mockModelConfig);
   });
 
@@ -150,6 +152,7 @@ describe("OpenRouterAdapter", () => {
 
     beforeEach(() => {
       mockCompletionsCreate.mockResolvedValue(mockApiResponse);
+      // This setup is now safe because mockReset() runs before it in the top-level beforeEach.
       mockComputeResponseCost
         .mockReturnValueOnce(mockExpectedUsage.inputCost)
         .mockReturnValueOnce(mockExpectedUsage.outputCost);
@@ -485,13 +488,15 @@ describe("OpenRouterAdapter", () => {
         receivedBlocks.push(block);
       }
 
+      // After the stream ends, the meta block is yielded. Let's filter it out for this assertion.
+      const textBlocks = receivedBlocks.filter((b) => b.type === "text");
       const expectedBlocks: TextBlock[] = [
         { type: "text", text: "Once " },
         { type: "text", text: "upon " },
         { type: "text", text: "a time..." },
       ];
 
-      expect(receivedBlocks).toEqual(expectedBlocks);
+      expect(textBlocks).toEqual(expectedBlocks);
     });
 
     it("should handle an empty stream gracefully", async () => {
@@ -505,6 +510,11 @@ describe("OpenRouterAdapter", () => {
     });
 
     it("should yield an ErrorBlock if the API call fails", async () => {
+      // FIX: Suppress console.error for this specific test to avoid noisy logs.
+      const consoleErrorSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
       const apiError = new Error("API Connection Failed");
       mockCompletionsCreate.mockRejectedValue(apiError);
 
@@ -522,6 +532,84 @@ describe("OpenRouterAdapter", () => {
       expect((receivedBlocks[0] as any).privateMessage).toBe(
         "API Connection Failed"
       );
+
+      // Restore the original console.error function
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("should yield content chunks and a final meta block with usage", async () => {
+      // 1. Define the mock stream chunks, including a final usage chunk
+      const mockUsage = {
+        prompt_tokens: 10,
+        completion_tokens: 25,
+        total_tokens: 35,
+      };
+      const mockStreamChunks = [
+        {
+          id: "chatcmpl-test-stream-123",
+          choices: [{ delta: { role: "assistant", content: null } }],
+        },
+        { choices: [{ delta: { content: "Once " } }] },
+        { choices: [{ delta: { content: "upon a time..." } }] },
+        // This is the crucial final chunk with usage data
+        { choices: [], usage: mockUsage },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ];
+
+      // Re-mock computeResponseCost for this specific test
+      const expectedInputCost = 0.0001; // 10 * (10 / 1M)
+      const expectedOutputCost = 0.00075; // 25 * (30 / 1M)
+      mockComputeResponseCost
+        .mockReturnValueOnce(expectedInputCost)
+        .mockReturnValueOnce(expectedOutputCost);
+
+      // 2. Set up the mock generator
+      async function* mockStreamGenerator() {
+        for (const chunk of mockStreamChunks) {
+          yield chunk;
+        }
+      }
+      mockCompletionsCreate.mockResolvedValue(mockStreamGenerator());
+
+      // 3. Call the adapter and collect results
+      const stream = adapter.streamResponse(mockRequestOptions);
+      const receivedBlocks: ContentBlock[] = [];
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+
+      // 4. Assert the results
+      expect(receivedBlocks.length).toBe(3); // 2 text blocks + 1 meta block
+
+      // Assert text blocks
+      expect(receivedBlocks[0]).toEqual({ type: "text", text: "Once " });
+      expect(receivedBlocks[1]).toEqual({
+        type: "text",
+        text: "upon a time...",
+      });
+
+      // Assert the final meta block
+      const metaBlock = receivedBlocks[2];
+      expect(metaBlock.type).toBe("meta");
+      expect((metaBlock as any).responseId).toBe("chatcmpl-test-stream-123");
+
+      // Assert the usage calculations
+      expect(mockComputeResponseCost).toHaveBeenCalledTimes(2);
+      expect(mockComputeResponseCost).toHaveBeenCalledWith(
+        mockUsage.prompt_tokens,
+        mockModelConfig.inputTokenCost
+      );
+      expect(mockComputeResponseCost).toHaveBeenCalledWith(
+        mockUsage.completion_tokens,
+        mockModelConfig.outputTokenCost
+      );
+
+      const expectedUsage: UsageResponse = {
+        inputCost: expectedInputCost,
+        outputCost: expectedOutputCost,
+        totalCost: expectedInputCost + expectedOutputCost,
+      };
+      expect((metaBlock as any).usage).toEqual(expectedUsage);
     });
   });
 });

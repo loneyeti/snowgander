@@ -358,7 +358,22 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         generateContentArgs
       );
 
+      let finalPromptTokens = 0;
+      let finalCandidateTokens = 0;
+      let finalTotalTokens = 0;
+      let responseId: string | undefined = undefined;
+
       for await (const chunk of responseStream) {
+        // Track usage metadata if present
+        if (chunk.usageMetadata) {
+          finalPromptTokens =
+            chunk.usageMetadata.promptTokenCount ?? finalPromptTokens;
+          finalCandidateTokens =
+            chunk.usageMetadata.candidatesTokenCount ?? finalCandidateTokens;
+          finalTotalTokens =
+            chunk.usageMetadata.totalTokenCount ?? finalTotalTokens;
+        }
+
         const candidate = chunk.candidates?.[0];
 
         if (!candidate || !candidate.content?.parts) {
@@ -385,6 +400,33 @@ export class GoogleAIAdapter implements AIVendorAdapter {
             };
           }
         }
+      }
+
+      // Yield final meta block with usage data if available
+      if (
+        this.inputTokenCost &&
+        this.outputTokenCost &&
+        (finalPromptTokens > 0 || finalCandidateTokens > 0)
+      ) {
+        const inputCost = computeResponseCost(
+          finalPromptTokens,
+          this.inputTokenCost
+        );
+        const outputCost = computeResponseCost(
+          finalCandidateTokens,
+          this.outputTokenCost
+        );
+        const usage: UsageResponse = {
+          inputCost: inputCost,
+          outputCost: outputCost,
+          totalCost: inputCost + outputCost,
+        };
+
+        yield {
+          type: "meta",
+          responseId: responseId || `google-stream-${Date.now()}`,
+          usage: usage,
+        };
       }
     } catch (error) {
       console.error("Error during Google GenAI stream:", error);

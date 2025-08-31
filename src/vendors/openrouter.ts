@@ -375,6 +375,11 @@ export class OpenRouterAdapter implements AIVendorAdapter {
         ? { reasoning: { max_tokens: budgetTokens } }
         : {};
 
+    // State variables to hold data accumulated during the stream
+    let responseId: string | undefined = undefined;
+    let promptTokens: number | undefined = undefined;
+    let completionTokens: number | undefined = undefined;
+
     try {
       const stream = await this.client.chat.completions.create({
         model,
@@ -386,6 +391,12 @@ export class OpenRouterAdapter implements AIVendorAdapter {
       });
 
       for await (const chunk of stream) {
+        // Capture the response ID from the first chunk
+        if (chunk.id && !responseId) {
+          responseId = chunk.id;
+        }
+
+        // Handle content deltas
         const content = chunk.choices[0]?.delta?.content;
         if (content) {
           yield {
@@ -393,8 +404,42 @@ export class OpenRouterAdapter implements AIVendorAdapter {
             text: content,
           };
         }
-        // Note: The 'reasoning' field is not typically available in stream deltas with this SDK version.
-        // We are only handling text content for now.
+
+        // Capture usage data from the final chunk
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens;
+          completionTokens = chunk.usage.completion_tokens;
+        }
+      }
+
+      // After the stream is finished, yield the final meta block
+      if (
+        responseId &&
+        promptTokens !== undefined &&
+        completionTokens !== undefined
+      ) {
+        let finalUsage: UsageResponse | undefined = undefined;
+        if (this.inputTokenCost && this.outputTokenCost) {
+          const inputCost = computeResponseCost(
+            promptTokens,
+            this.inputTokenCost
+          );
+          const outputCost = computeResponseCost(
+            completionTokens,
+            this.outputTokenCost
+          );
+          finalUsage = {
+            inputCost,
+            outputCost,
+            totalCost: inputCost + outputCost,
+          };
+        }
+
+        yield {
+          type: "meta",
+          responseId: responseId,
+          usage: finalUsage,
+        };
       }
     } catch (error: any) {
       console.error("Error during OpenRouter stream:", error);

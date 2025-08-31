@@ -425,43 +425,34 @@ export class AnthropicAdapter implements AIVendorAdapter {
         ...(tools && { tools }),
       });
 
-      // --- START: NEW STATE MANAGEMENT LOGIC ---
-      // This state object will hold the partial content blocks as they are being built.
-      // We use a map with the block 'index' as the key for easy updates.
       const partialBlocks = new Map<number, ContentBlock>();
-      // --- END: NEW STATE MANAGEMENT LOGIC ---
+      // State variables for final meta block
+      let finalResponseId: string | undefined = undefined;
+      let inputTokens = 0;
+      let outputTokens = 0;
 
       for await (const event of stream) {
-        // We now process every event type, not just content_block_delta.
         switch (event.type) {
           case "message_start":
-            // Yield a meta block with the response ID so the client can track it.
-            yield {
-              type: "meta",
-              responseId: event.message.id,
-            };
+            // Capture the response ID and input tokens, but do not yield yet.
+            finalResponseId = event.message.id;
+            inputTokens = event.message.usage.input_tokens;
             break;
 
           case "content_block_start": {
-            // A new block is starting. We create a placeholder for it in our map.
-            // This is crucial because it tells us the block's 'type' before we get content.
             const { index, content_block } = event;
             switch (content_block.type) {
               case "text":
-                partialBlocks.set(index, {
-                  type: "text",
-                  text: "",
-                });
+                partialBlocks.set(index, { type: "text", text: "" });
                 break;
               case "thinking":
                 partialBlocks.set(index, {
                   type: "thinking",
                   thinking: "",
-                  signature: "anthropic", // Add our signature
+                  signature: "anthropic",
                 });
                 break;
               case "tool_use":
-                // For tool_use, we initialize the input as an empty string.
                 partialBlocks.set(index, {
                   type: "tool_use",
                   id: content_block.id,
@@ -474,22 +465,17 @@ export class AnthropicAdapter implements AIVendorAdapter {
           }
 
           case "content_block_delta": {
-            // A chunk of data has arrived for a specific block.
             const { index, delta } = event;
             const block = partialBlocks.get(index);
-
-            if (!block) break; // Should not happen in a valid stream
+            if (!block) break;
 
             switch (delta.type) {
               case "text_delta":
-                // For text, we can yield the delta immediately for real-time streaming.
-                // The frontend will just append this text.
                 if (block.type === "text") {
                   yield { type: "text", text: delta.text };
                 }
                 break;
               case "thinking_delta":
-                // Same for thinking, we yield the delta immediately.
                 if (block.type === "thinking") {
                   yield {
                     type: "thinking",
@@ -499,8 +485,6 @@ export class AnthropicAdapter implements AIVendorAdapter {
                 }
                 break;
               case "input_json_delta":
-                // For tool use, we do NOT yield the partial JSON.
-                // It's not useful to the frontend. Instead, we accumulate it.
                 if (block.type === "tool_use") {
                   block.input += delta.partial_json;
                 }
@@ -510,21 +494,51 @@ export class AnthropicAdapter implements AIVendorAdapter {
           }
 
           case "content_block_stop": {
-            // A block has finished. This is our chance to yield the complete tool_use block.
             const { index } = event;
             const block = partialBlocks.get(index);
             if (block && block.type === "tool_use") {
-              // Now that the JSON is complete (or as complete as the model sends it),
-              // we yield the full ToolUseBlock.
               yield block;
             }
             break;
           }
 
           case "message_delta":
+            // The usage in message_delta is cumulative for output tokens.
+            // We capture the latest value on each delta event.
+            if (event.usage) {
+              outputTokens = event.usage.output_tokens;
+            }
+            break;
+
           case "message_stop":
+            // This event signals the end of the stream. We will yield our meta block after the loop.
             break;
         }
+      }
+
+      // After the loop, calculate the final usage and yield the meta block.
+      if (finalResponseId) {
+        let finalUsage: UsageResponse | undefined = undefined;
+        if (this.inputTokenCost && this.outputTokenCost) {
+          const inputCost = computeResponseCost(
+            inputTokens,
+            this.inputTokenCost
+          );
+          const outputCost = computeResponseCost(
+            outputTokens,
+            this.outputTokenCost
+          );
+          finalUsage = {
+            inputCost,
+            outputCost,
+            totalCost: inputCost + outputCost,
+          };
+        }
+        yield {
+          type: "meta",
+          responseId: finalResponseId,
+          usage: finalUsage,
+        };
       }
     } catch (error) {
       console.error("Error during Anthropic stream:", error);
