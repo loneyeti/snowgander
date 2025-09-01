@@ -283,5 +283,67 @@ describe("OpenAIAdapter", () => {
       // Restore the original console.error function
       consoleErrorSpy.mockRestore();
     });
+
+    it("should yield ThinkingBlocks for 'reasoning_summary_text.delta' and then TextBlocks", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+
+      async function* mockRealStream() {
+        // First, yield the reasoning deltas as seen in the logs
+        yield {
+          type: "response.reasoning_summary_text.delta",
+          delta: "**Respond",
+        };
+        yield { type: "response.reasoning_summary_text.delta", delta: "ing" };
+        yield { type: "response.reasoning_summary_text.delta", delta: " to**" };
+
+        // Then, yield the regular text output deltas
+        yield { type: "response.output_text.delta", delta: "Hello!" };
+        yield { type: "response.output_text.delta", delta: " I am here." };
+
+        // Finally, yield the completed event
+        yield {
+          type: "response.completed",
+          response: {
+            id: "resp-123",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+      }
+
+      mockResponsesCreate.mockResolvedValue(mockRealStream());
+
+      const receivedBlocks: ContentBlock[] = [];
+      const stream = adapter.streamResponse(basicOptions);
+      for await (const block of stream) {
+        receivedBlocks.push(block);
+      }
+
+      // We expect 6 blocks: 3 thinking, 2 text, 1 meta
+      expect(receivedBlocks.length).toBe(6);
+
+      // Verify the content of the blocks
+      const thinkingText = receivedBlocks
+        .filter((b) => b.type === "thinking")
+        .map((b: any) => b.thinking)
+        .join("");
+      const regularText = receivedBlocks
+        .filter((b) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("");
+
+      expect(thinkingText).toBe("**Responding to**");
+      expect(regularText).toBe("Hello! I am here.");
+
+      // CRITICAL: Verify the order of the blocks
+      const blockOrder = receivedBlocks.map((b) => b.type);
+      expect(blockOrder).toEqual([
+        "thinking",
+        "thinking",
+        "thinking",
+        "text",
+        "text",
+        "meta",
+      ]);
+    });
   });
 });

@@ -37,6 +37,25 @@ type OpenAIMessageInput = {
   content: OpenAIMessageContentPart[]; // Content is always an array of parts for the API
 };
 
+// START of new code to add
+// Define the structure of the reasoning text item within the summary array
+interface OpenAIReasoningSummaryTextItem {
+  type: "summary_text";
+  text: string;
+}
+
+// Define the structure of the top-level reasoning item in the output array for non-streaming
+interface OpenAIReasoningOutput {
+  type: "reasoning";
+  summary: OpenAIReasoningSummaryTextItem[]; // Changed from 'content' to 'summary'
+}
+
+// Type guard to check if an output item matches our OpenAIReasoningOutput interface
+function isReasoningOutput(item: any): item is OpenAIReasoningOutput {
+  return item && item.type === "reasoning" && Array.isArray(item.summary); // Changed to 'summary'
+}
+// END of new code to add
+
 export class OpenAIAdapter implements AIVendorAdapter {
   private client: OpenAI;
   private modelConfig: ModelConfig;
@@ -63,108 +82,14 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
   }
 
-  private mapToOpenAIChatMessages(
-    messages: Message[]
-  ): OpenAI.Chat.ChatCompletionMessageParam[] {
-    const apiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-
-    for (const msg of messages) {
-      // Skip system messages, as they are handled by a separate parameter.
-      if (msg.role === "system") {
-        console.warn(
-          "System message found in messages array, skipping. Use systemPrompt parameter in AIRequestOptions instead."
-        );
-        continue;
+  private getReasoningParam(budgetTokens: number | null | undefined):
+    | {
+        reasoning: {
+          effort: "low" | "medium" | "high";
+          summary: "auto" | "concise" | "detailed";
+        };
       }
-
-      // Map role. The chat completions API uses 'assistant', not 'developer'.
-      const role = msg.role as "user" | "assistant";
-
-      if (typeof msg.content === "string") {
-        apiMessages.push({ role, content: msg.content });
-        continue;
-      }
-
-      if (!Array.isArray(msg.content)) {
-        console.warn(
-          `Message content is not a string or array for role '${role}'. Skipping message.`
-        );
-        continue;
-      }
-
-      // Handle multimodal content (text and images)
-      const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [];
-      for (const block of msg.content) {
-        if (block.type === "text") {
-          contentParts.push({ type: "text", text: block.text });
-        } else if (
-          block.type === "image" &&
-          this.isVisionCapable &&
-          role === "user"
-        ) {
-          contentParts.push({
-            type: "image_url",
-            image_url: { url: block.url },
-          });
-        } else if (
-          block.type === "image_data" &&
-          this.isVisionCapable &&
-          role === "user"
-        ) {
-          contentParts.push({
-            type: "image_url",
-            image_url: {
-              url: `data:${block.mimeType};base64,${block.base64Data}`,
-            },
-          });
-        } else {
-          // Warn about unsupported or improperly placed blocks
-          if (
-            (block.type === "image" || block.type === "image_data") &&
-            !this.isVisionCapable
-          ) {
-            console.warn(
-              `Skipping image block in user message for non-vision model '${this.modelConfig.apiName}'.`
-            );
-          } else if (
-            (block.type === "image" || block.type === "image_data") &&
-            role !== "user"
-          ) {
-            console.warn(
-              `Skipping image block found in non-user role ('${role}').`
-            );
-          } else {
-            console.warn(
-              `Skipping unsupported content block type '${block.type}' for OpenAI Chat Completions API call.`
-            );
-          }
-        }
-      }
-
-      if (contentParts.length > 0) {
-        // For assistant messages, OpenAI API expects a string, not a content array.
-        // We will join the text parts.
-        if (role === "assistant") {
-          const assistantText = contentParts
-            .filter((p) => p.type === "text")
-            .map((p) => (p as OpenAI.Chat.ChatCompletionContentPartText).text)
-            .join("\n");
-          if (assistantText) {
-            apiMessages.push({ role: "assistant", content: assistantText });
-          }
-        } else {
-          // User messages can have a content array
-          apiMessages.push({ role: "user", content: contentParts });
-        }
-      }
-    }
-
-    return apiMessages;
-  }
-
-  private getReasoningParam(
-    budgetTokens: number | null | undefined
-  ): { reasoning: { effort: "low" | "medium" | "high" } } | undefined {
+    | undefined {
     // If budgetTokens is not provided, do not add the reasoning parameter.
     if (typeof budgetTokens !== "number" || budgetTokens < 0) {
       return undefined;
@@ -182,7 +107,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
 
     return {
-      reasoning: { effort },
+      reasoning: { effort: effort, summary: "detailed" },
     };
   }
 
@@ -471,6 +396,37 @@ export class OpenAIAdapter implements AIVendorAdapter {
 
     // --- Map response back to ContentBlock array ---
     const responseBlock: ContentBlock[] = [];
+
+    if (response.output && Array.isArray(response.output)) {
+      const reasoningOutputs = response.output.filter(
+        isReasoningOutput
+      ) as OpenAIReasoningOutput[]; // Uses our type guard
+
+      if (reasoningOutputs.length > 0) {
+        // Create a temporary array to hold all summary items from all reasoning blocks.
+        const allSummaryItems: OpenAIReasoningSummaryTextItem[] = [];
+
+        // Use a for...of loop. Inside this loop, TypeScript *guarantees*
+        // that 'output' is of type OpenAIReasoningOutput.
+        for (const output of reasoningOutputs) {
+          allSummaryItems.push(...output.summary);
+        }
+
+        // Now, map over the flattened and correctly typed array.
+        const reasoningText = allSummaryItems
+          .map((item) => (item.type === "summary_text" ? item.text : ""))
+          .join("\n\n");
+
+        if (reasoningText) {
+          responseBlock.push({
+            type: "thinking",
+            thinking: reasoningText,
+            signature: "openai",
+          });
+        }
+      }
+    }
+
     if (extractedText) {
       responseBlock.push({ type: "text", text: extractedText });
     }
@@ -580,7 +536,6 @@ export class OpenAIAdapter implements AIVendorAdapter {
     let currentImageGenerationId: string | null = null;
     let finalResponseId: string | undefined = undefined;
     let finalUsage: UsageResponse | undefined = undefined;
-
     const apiInput: OpenAIMessageInput[] = messages
       .map((msg): OpenAIMessageInput | null => {
         let role: "user" | "assistant" | "developer";
@@ -653,15 +608,22 @@ export class OpenAIAdapter implements AIVendorAdapter {
         imageGenerationTool.background = imageGenOptions.background;
       }
       finalTools.push(imageGenerationTool);
-      /*
-      console.log(
-        "[SNOWGANDER DIAGNOSTIC] - streamResponse - Sending tools to OpenAI:",
-        JSON.stringify(finalTools, null, 2)
-      );
-      */
     }
 
     const reasoningParam = this.getReasoningParam(options.budgetTokens);
+
+    console.log(
+      `SNOWGANDER: sending this request: ${JSON.stringify({
+        model: model,
+        instructions: systemPrompt,
+        previous_response_id: previousResponseId, // Pass state ID
+        input: apiInput as any,
+        tools: finalTools,
+        store: store,
+        stream: true,
+        ...(reasoningParam as any),
+      })}`
+    );
 
     try {
       // First cast to unknown, then to AsyncIterable to satisfy TypeScript's type safety
@@ -677,7 +639,9 @@ export class OpenAIAdapter implements AIVendorAdapter {
       })) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
-        //console.log("[SNOWGANDER DIAGNOSTIC] Received event type:", event.type);
+        console.log(
+          `SNOWGANDER: Received stream event: ${JSON.stringify(event, null, 2)}`
+        );
         switch (event.type) {
           case "response.output_text.delta":
             if (event.delta) {
@@ -720,6 +684,18 @@ export class OpenAIAdapter implements AIVendorAdapter {
             };
             break;
 
+          // START of new code to add
+          case "response.reasoning_summary_text.delta":
+            if (event.delta) {
+              yield {
+                type: "thinking",
+                thinking: event.delta,
+                signature: "openai",
+              };
+            }
+            break;
+          // END of new code to add
+
           case "response.completed": // Capture final data
             finalResponseId = event.response.id;
             if (
@@ -761,6 +737,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
                 totalCost: inputCost + outputCost + webSearchCost,
               };
             }
+
             break;
 
           case "response.failed":
@@ -776,7 +753,6 @@ export class OpenAIAdapter implements AIVendorAdapter {
         }
       }
       if (finalResponseId) {
-        // Yield final metadata block after loop
         yield { type: "meta", responseId: finalResponseId, usage: finalUsage };
       }
     } catch (error: any) {
