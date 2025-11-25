@@ -107,7 +107,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
 
     return {
-      reasoning: { effort: effort, summary: "detailed" },
+      reasoning: { effort: effort, summary: "auto" },
     };
   }
 
