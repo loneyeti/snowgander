@@ -7,6 +7,7 @@ import {
   Part,
   GenerateContentResponse,
   Modality,
+  PartMediaResolutionLevel,
 } from "@google/genai";
 import {
   AIVendorAdapter,
@@ -55,6 +56,17 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       const role = msg.role === "assistant" ? "model" : "user";
       const parts: Part[] = [];
 
+      const attachSignature = (signature: string) => {
+        if (parts.length > 0) {
+          (parts[parts.length - 1] as any).thoughtSignature = signature;
+        } else {
+          // Edge case: Signature came before content or standalone. 
+          // We attach it to a dummy empty text part if needed, or hold it.
+          // Gemini 3 docs say signature belongs to a Part.
+          parts.push({ text: "", thoughtSignature: signature } as any);
+        }
+      };
+
       if (typeof msg.content === "string") {
         parts.push({ text: msg.content });
       } else if (Array.isArray(msg.content)) {
@@ -67,9 +79,9 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                 mimeType: block.mimeType,
                 data: block.base64Data,
               },
+              mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH } 
             });
           } else if (block.type === "image" && this.isVisionCapable) {
-            // NOTE: The console.log statement has been removed from here.
             try {
               const imageData = await getImageDataFromUrl(block.url);
               if (imageData) {
@@ -78,6 +90,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                     mimeType: imageData.mimeType,
                     data: imageData.base64Data,
                   },
+                  mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH } 
                 });
               }
             } catch (error) {
@@ -87,11 +100,15 @@ export class GoogleAIAdapter implements AIVendorAdapter {
               );
               parts.push({ text: `[Error: Failed to load image from URL]` });
             }
-          } else if (
-            block.type === "thinking" ||
-            block.type === "redacted_thinking"
-          ) {
-            continue;
+          } else if (block.type === "thinking") {
+            // CRITICAL FOR GEMINI 3:
+            // If we have a signature preserved in the thinking block, we must send it back.
+            // The signature belongs to the *content* part, so we attach it to the last added part.
+            if (block.signature) {
+              attachSignature(block.signature);
+            }
+            // We generally don't send the "thinking" text back to the model in the history
+            // for Gemini, as it manages its own thought process, but the signature is mandatory.
           }
         }
       }
@@ -117,14 +134,20 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     if (maxTokens) {
       generationConfig.maxOutputTokens = maxTokens;
     }
+    // --- GEMINI 3 THINKING CONFIGURATION ---
     if (this.isThinkingCapable) {
       (generationConfig as any).thinkingConfig = {
         includeThoughts: true,
       };
-      if (budgetTokens && budgetTokens > 0) {
-        (generationConfig as any).thinkingConfig.thinkingBudget = budgetTokens;
-      } else if (budgetTokens === 0) {
-        (generationConfig as any).thinkingConfig.thinkingBudget = 0;
+
+      // Map budgetTokens to thinking_level
+      if (budgetTokens === 0) {
+        // Explicitly disabled/low reasoning
+        (generationConfig as any).thinkingConfig.thinking_level = "low";
+      } else {
+        // Default to high if thinking is enabled, as Gemini 3 is dynamic/high by default
+        // We ignore the specific 'number' of budgetTokens as Gemini 3 uses levels.
+        (generationConfig as any).thinkingConfig.thinking_level = "high";
       }
     }
     if (this.isImageGenerationCapable) {
@@ -208,12 +231,29 @@ export class GoogleAIAdapter implements AIVendorAdapter {
 
     const contentBlocks: ContentBlock[] = [];
     for (const part of responseCandidate.content.parts) {
-      if ((part as any).thought === true) {
+      const partAny = part as any;
+      
+      // 1. Capture Thought Signature
+      // Gemini 3 attaches signatures to parts. We store this in a ThinkingBlock.
+      // Even if there is no visible "thought" text, we need the signature.
+      if (partAny.thoughtSignature) {
         contentBlocks.push({
           type: "thinking",
-          thinking: part.text || "",
-          signature: "google",
+          thinking: partAny.thought === true ? part.text || "" : "", // Only show text if it's actual thought text
+          signature: partAny.thoughtSignature,
         });
+      }
+
+      // 2. Handle Content
+      if (partAny.thought === true) {
+        // If we didn't capture the signature above (e.g. legacy thought), capture text here
+        if (!partAny.thoughtSignature) {
+           contentBlocks.push({
+            type: "thinking",
+            thinking: part.text || "",
+            signature: "google-legacy",
+          });
+        }
       } else if (part.text) {
         contentBlocks.push({ type: "text", text: part.text });
       } else if (part.inlineData) {
@@ -222,21 +262,6 @@ export class GoogleAIAdapter implements AIVendorAdapter {
           mimeType: part.inlineData.mimeType,
           base64Data: part.inlineData.data,
         } as ImageDataBlock);
-      }
-    }
-
-    if (contentBlocks.length === 0) {
-      const fallbackText = responseCandidate.content.parts
-        .map((p) => p.text)
-        .join("");
-      if (fallbackText) {
-        contentBlocks.push({ type: "text", text: fallbackText });
-      } else {
-        console.error(
-          "No processable content found in Gemini response parts:",
-          responseCandidate.content.parts
-        );
-        throw new Error("No processable content found in Gemini response.");
       }
     }
 
@@ -310,26 +335,41 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       budgetTokens,
       systemPrompt,
       useImageGeneration,
+      temperature,
     } = options;
 
     const generationConfig: GenerationConfig = {};
     if (maxTokens) {
       generationConfig.maxOutputTokens = maxTokens;
     }
+
+    // --- GEMINI 3 THINKING CONFIGURATION ---
     if (this.isThinkingCapable) {
       (generationConfig as any).thinkingConfig = {
         includeThoughts: true,
       };
-      if (budgetTokens && budgetTokens > 0) {
-        (generationConfig as any).thinkingConfig.thinkingBudget = budgetTokens;
-      } else if (budgetTokens === 0) {
-        (generationConfig as any).thinkingConfig.thinkingBudget = 0;
+
+      // Map budgetTokens to thinking_level
+      if (budgetTokens === 0) {
+        // Explicitly disabled/low reasoning (fastest)
+        (generationConfig as any).thinkingConfig.thinking_level = "low";
+      } else {
+        // Default to high if thinking is enabled. 
+        // Gemini 3 uses 'high' for deep reasoning, 'medium' is coming soon.
+        (generationConfig as any).thinkingConfig.thinking_level = "high";
       }
     }
+
+    // Gemini 3 recommends Temperature 1.0. 
+    if (temperature !== undefined) {
+      generationConfig.temperature = temperature;
+    }
+
     if (this.isImageGenerationCapable) {
       (generationConfig as any).responseModalities = ["Text", "Image"];
     }
 
+    // Use the updated mapping logic (includes media_resolution_high handling)
     const formattedMessages = await this.mapMessagesToGoogleContent(messages);
 
     let systemInstructionContent: Content | undefined = undefined;
@@ -353,6 +393,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
       };
     }
+
     try {
       const responseStream = await this.client.models.generateContentStream(
         generateContentArgs
@@ -381,18 +422,36 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         }
 
         for (const part of candidate.content.parts) {
-          if ((part as any).thought === true) {
+          const partAny = part as any;
+
+          // 1. CRITICAL: Capture Thought Signature
+          // Gemini 3 sends signatures, sometimes in empty text chunks at the end.
+          if (partAny.thoughtSignature) {
+            yield {
+              type: "thinking",
+              // Only include text if 'thought' is also true, otherwise it's just a signature container
+              thinking: partAny.thought === true ? part.text || "" : "",
+              signature: partAny.thoughtSignature,
+            };
+          } 
+          // 2. Standard Thinking (Text without explicit new signature field yet)
+          else if (partAny.thought === true) {
             yield {
               type: "thinking",
               thinking: part.text || "",
-              signature: "google",
+              // Fallback if no signature provided in this chunk
+              signature: "google", 
             };
-          } else if (part.text) {
+          } 
+          // 3. Standard Text
+          else if (part.text) {
             yield {
               type: "text",
               text: part.text,
             };
-          } else if (part.inlineData) {
+          } 
+          // 4. Inline Images
+          else if (part.inlineData) {
             yield {
               type: "image_data",
               mimeType: part.inlineData.mimeType || "image/png",

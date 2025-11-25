@@ -3,16 +3,11 @@ import {
   ModelConfig,
   AIRequestOptions,
   Message,
-  UsageResponse,
   Chat,
   ImageBlock,
-  ChatResponse,
-  NotImplementedError,
   ContentBlock,
-  AIResponse,
 } from "../../types";
-import { GoogleGenAI } from "@google/genai";
-import { getImageDataFromUrl, computeResponseCost } from "../../utils";
+import { computeResponseCost, getImageDataFromUrl } from "../../utils";
 
 // --- Define Mocks FIRST ---
 const mockGenerateContent = jest.fn();
@@ -27,7 +22,10 @@ const mockGoogleGenAIConstructor = jest.fn().mockImplementation(() => ({
 // --- Mock the SDK using jest.doMock (not hoisted) ---
 jest.doMock("@google/genai", () => ({
   GoogleGenAI: mockGoogleGenAIConstructor,
-  // Mock other exports if they were needed
+  // CRITICAL FIX: Mock the enum used in the implementation
+  PartMediaResolutionLevel: {
+    MEDIA_RESOLUTION_HIGH: "MEDIA_RESOLUTION_HIGH",
+  },
 }));
 
 // --- Mock the utility function ---
@@ -35,10 +33,12 @@ jest.mock("../../utils", () => ({
   ...jest.requireActual("../../utils"),
   getImageDataFromUrl: jest.fn(),
 }));
+
 // --- Get Typed Mocks AFTER jest.doMock ---
 const MockedGetImageDataFromUrl = getImageDataFromUrl as jest.Mock;
 
 describe("GoogleAIAdapter", () => {
+  // Use let for the class to support lazy import after doMock
   let GoogleAIAdapter: typeof import("../google").GoogleAIAdapter;
   let adapter: import("../google").GoogleAIAdapter;
 
@@ -61,6 +61,7 @@ describe("GoogleAIAdapter", () => {
   };
 
   beforeAll(async () => {
+    // Import the module AFTER jest.doMock
     const module = await import("../google");
     GoogleAIAdapter = module.GoogleAIAdapter;
   });
@@ -79,7 +80,6 @@ describe("GoogleAIAdapter", () => {
 
   it("should reflect capabilities from ModelConfig", () => {
     expect(adapter.isVisionCapable).toBe(true);
-    // ... other capability checks
   });
 
   const mockBasicApiResponse = {
@@ -121,8 +121,6 @@ describe("GoogleAIAdapter", () => {
 
     // --- Vision Tests ---
 
-    // THIS TEST IS REWRITTEN. It no longer checks for a warning.
-    // It now tests the SUCCESSFUL handling of an ImageBlock URL.
     it("should handle ImageBlock by fetching the URL and converting to inlineData", async () => {
       const imageUrl = "http://example.com/image.gif";
       const imageBlock: ImageBlock = { type: "image", url: imageUrl };
@@ -137,7 +135,6 @@ describe("GoogleAIAdapter", () => {
         messages: messagesWithImageUrl,
       };
 
-      // Mock the return value of our utility function
       const mockImageData = {
         mimeType: "image/gif",
         base64Data: "base64gifstring",
@@ -147,10 +144,9 @@ describe("GoogleAIAdapter", () => {
 
       await adapter.generateResponse(optionsWithImageUrl);
 
-      // Verify the utility was called with the correct URL
       expect(MockedGetImageDataFromUrl).toHaveBeenCalledWith(imageUrl);
 
-      // Verify the SDK was called with the converted base64 data
+      // Expect the call to include the new mediaResolution configuration
       expect(mockGenerateContent).toHaveBeenCalledWith(
         expect.objectContaining({
           contents: [
@@ -163,6 +159,8 @@ describe("GoogleAIAdapter", () => {
                     mimeType: mockImageData.mimeType,
                     data: mockImageData.base64Data,
                   },
+                  // Fix: This expectation was missing in the original test
+                  mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" },
                 },
               ],
             },
@@ -172,17 +170,13 @@ describe("GoogleAIAdapter", () => {
     });
 
     it("should yield content chunks and a final meta block with usage", async () => {
-      // 1. Mock the stream from the Google SDK
       async function* mockStreamWithUsage() {
-        // First chunk: just text
         yield {
           candidates: [{ content: { parts: [{ text: "This " }] } }],
         };
-        // Second chunk: more text
         yield {
           candidates: [{ content: { parts: [{ text: "is a " }] } }],
         };
-        // Final chunk: last bit of text AND the usage metadata
         yield {
           candidates: [{ content: { parts: [{ text: "test." }] } }],
           usageMetadata: {
@@ -193,39 +187,26 @@ describe("GoogleAIAdapter", () => {
         };
       }
       mockGenerateContentStream.mockReturnValue(mockStreamWithUsage());
-
-      // Because the adapter is initialized with mockGeminiProVision in beforeEach,
-      // we need to use its costs for the assertion.
       const testAdapter = new GoogleAIAdapter(mockConfig, mockGeminiProVision);
-
-      // 2. Call the adapter's streamResponse method
       const stream = testAdapter.streamResponse({
         ...basicOptions,
         model: mockGeminiProVision.apiName,
       });
 
-      // 3. Collect all the chunks yielded by our adapter
       const receivedBlocks: ContentBlock[] = [];
       for await (const block of stream) {
         receivedBlocks.push(block);
       }
 
-      // 4. Assert the results
-      // We expect 3 text blocks and 1 meta block
       expect(receivedBlocks).toHaveLength(4);
-
-      // Check the content blocks
       expect(receivedBlocks[0]).toEqual({ type: "text", text: "This " });
       expect(receivedBlocks[1]).toEqual({ type: "text", text: "is a " });
       expect(receivedBlocks[2]).toEqual({ type: "text", text: "test." });
 
-      // --- THIS IS THE CORRECTED PART ---
-      // Check the final meta block
       const metaBlock = receivedBlocks[3];
       expect(metaBlock.type).toBe("meta");
       expect((metaBlock as any).responseId).toBeDefined();
 
-      // Calculate expected costs using the helper function
       const expectedInputCost = computeResponseCost(
         15,
         testAdapter.inputTokenCost!
@@ -236,18 +217,12 @@ describe("GoogleAIAdapter", () => {
       );
       const expectedTotalCost = expectedInputCost + expectedOutputCost;
 
-      // Test the usage object properties individually for floating-point precision
       const receivedUsage = (metaBlock as any).usage;
       expect(receivedUsage).toBeDefined();
       expect(receivedUsage.inputCost).toBeCloseTo(expectedInputCost);
       expect(receivedUsage.outputCost).toBeCloseTo(expectedOutputCost);
       expect(receivedUsage.totalCost).toBeCloseTo(expectedTotalCost);
     });
-
-    // THIS TEST IS REMOVED as it is now redundant.
-    // The `visionUrl` parameter is deprecated, and its functionality
-    // is fully covered by the `ImageBlock` test above.
-    // it("should handle visionUrl correctly", async () => { ... });
   });
 
   describe("sendChat", () => {
@@ -262,7 +237,6 @@ describe("GoogleAIAdapter", () => {
       budgetTokens: null,
     };
 
-    // THIS TEST IS UPDATED to check the new behavior of sendChat
     it("should handle chat with visionUrl by creating an ImageBlock", async () => {
       const chatWithVision: Chat = {
         ...basicChat,
@@ -280,8 +254,6 @@ describe("GoogleAIAdapter", () => {
 
       await adapter.sendChat(chatWithVision);
 
-      // Verify that sendChat constructed the correct `messages` array
-      // with the prompt text and an ImageBlock from the visionUrl.
       expect(generateResponseSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           model: mockGeminiProVision.apiName,
@@ -294,7 +266,6 @@ describe("GoogleAIAdapter", () => {
               ],
             },
           ],
-          // The top-level visionUrl in AIRequestOptions should be undefined
         })
       );
       generateResponseSpy.mockRestore();
@@ -312,7 +283,6 @@ describe("GoogleAIAdapter", () => {
       ],
     };
 
-    // THIS TEST IS UPDATED to use an ImageBlock instead of `visionUrl`
     it("should handle ImageBlock correctly in streaming", async () => {
       const imageUrl = "http://example.com/image.jpg";
       const optionsWithImage: AIRequestOptions = {
@@ -341,11 +311,11 @@ describe("GoogleAIAdapter", () => {
       mockGenerateContentStream.mockReturnValue(mockVisionStream());
 
       const stream = adapter.streamResponse(optionsWithImage);
-      await stream.next(); // Execute up to the first yield to trigger the call
+      await stream.next();
 
-      // Verify the utility was called
       expect(MockedGetImageDataFromUrl).toHaveBeenCalledWith(imageUrl);
-      // Verify the stream was initiated with the correct, converted data
+      
+      // Fix: Expectation must now include mediaResolution for the streaming test too
       expect(mockGenerateContentStream).toHaveBeenCalledWith(
         expect.objectContaining({
           contents: expect.arrayContaining([
@@ -357,6 +327,7 @@ describe("GoogleAIAdapter", () => {
                     mimeType: mockImageData.mimeType,
                     data: mockImageData.base64Data,
                   },
+                  mediaResolution: { level: "MEDIA_RESOLUTION_HIGH" },
                 },
               ]),
             }),
