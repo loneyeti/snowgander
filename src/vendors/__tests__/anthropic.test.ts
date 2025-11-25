@@ -345,7 +345,7 @@ describe("AnthropicAdapter", () => {
           {
             type: "thinking",
             thinking: "Assistant is thinking...",
-            signature: "anthropic",
+            signature: "",
           },
           { type: "text", text: "Here is the result." },
         ],
@@ -361,7 +361,7 @@ describe("AnthropicAdapter", () => {
         {
           type: "thinking",
           thinking: "Assistant is thinking...",
-          signature: "anthropic",
+          signature: "",
         },
         { type: "text", text: "Here is the result." },
       ]);
@@ -518,7 +518,7 @@ describe("AnthropicAdapter", () => {
         {
           type: "thinking",
           thinking: "Analyzing... ",
-          signature: "anthropic",
+          signature: "",
         },
         { type: "text", text: "Here is " },
         { type: "text", text: "the answer." },

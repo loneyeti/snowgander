@@ -248,7 +248,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
         contentBlocks.push({
           type: "thinking",
           thinking: block.thinking,
-          signature: "anthropic",
+          signature: block.signature, 
         });
       } else if (block.type === "text") {
         contentBlocks.push({
@@ -480,7 +480,16 @@ export class AnthropicAdapter implements AIVendorAdapter {
                   yield {
                     type: "thinking",
                     thinking: delta.thinking,
-                    signature: "anthropic",
+                    signature: "",
+                  };
+                }
+                break;
+              case "signature_delta":
+                if (block.type === "thinking") {
+                  yield {
+                    type: "thinking",
+                    thinking: "",
+                    signature: delta.signature,
                   };
                 }
                 break;
