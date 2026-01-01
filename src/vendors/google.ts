@@ -1,13 +1,9 @@
-// src/vendors/google.ts (Corrected Version)
-
 import {
   GoogleGenAI,
-  GenerationConfig,
   Content,
   Part,
   GenerateContentResponse,
   Modality,
-  PartMediaResolutionLevel,
 } from "@google/genai";
 import {
   AIVendorAdapter,
@@ -39,12 +35,17 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     this.isVisionCapable = modelConfig.isVision;
     this.isImageGenerationCapable = modelConfig.isImageGeneration;
     this.isThinkingCapable = modelConfig.isThinking;
+
     if (modelConfig.inputTokenCost && modelConfig.outputTokenCost) {
       this.inputTokenCost = modelConfig.inputTokenCost;
       this.outputTokenCost = modelConfig.outputTokenCost;
     }
   }
 
+  /**
+   * Maps internal Message format to Google's Content format.
+   * Handles downloading and converting images for vision models.
+   */
   private async mapMessagesToGoogleContent(
     messages: Message[]
   ): Promise<Content[]> {
@@ -55,17 +56,6 @@ export class GoogleAIAdapter implements AIVendorAdapter {
 
       const role = msg.role === "assistant" ? "model" : "user";
       const parts: Part[] = [];
-
-      const attachSignature = (signature: string) => {
-        if (parts.length > 0) {
-          (parts[parts.length - 1] as any).thoughtSignature = signature;
-        } else {
-          // Edge case: Signature came before content or standalone. 
-          // We attach it to a dummy empty text part if needed, or hold it.
-          // Gemini 3 docs say signature belongs to a Part.
-          parts.push({ text: "", thoughtSignature: signature } as any);
-        }
-      };
 
       if (typeof msg.content === "string") {
         parts.push({ text: msg.content });
@@ -79,7 +69,6 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                 mimeType: block.mimeType,
                 data: block.base64Data,
               },
-              mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH } 
             });
           } else if (block.type === "image" && this.isVisionCapable) {
             try {
@@ -90,7 +79,6 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                     mimeType: imageData.mimeType,
                     data: imageData.base64Data,
                   },
-                  mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH } 
                 });
               }
             } catch (error) {
@@ -100,15 +88,14 @@ export class GoogleAIAdapter implements AIVendorAdapter {
               );
               parts.push({ text: `[Error: Failed to load image from URL]` });
             }
-          } else if (block.type === "thinking") {
-            // CRITICAL FOR GEMINI 3:
-            // If we have a signature preserved in the thinking block, we must send it back.
-            // The signature belongs to the *content* part, so we attach it to the last added part.
-            if (block.signature) {
-              attachSignature(block.signature);
-            }
-            // We generally don't send the "thinking" text back to the model in the history
-            // for Gemini, as it manages its own thought process, but the signature is mandatory.
+          } else if (
+            block.type === "thinking" ||
+            block.type === "redacted_thinking"
+          ) {
+            // Generally we don't send thinking blocks back to the model unless
+            // explicitly constructing a thought history, but usually we skip them
+            // or send them as text if needed. Skipping for now.
+            continue;
           }
         }
       }
@@ -117,45 +104,63 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         googleContents.push({ role, parts });
       }
     }
+
     return googleContents;
   }
 
-  async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const {
-      model,
-      messages,
-      maxTokens,
-      budgetTokens,
-      systemPrompt,
-      useImageGeneration,
-    } = options;
+  /**
+   * Helper to build the unified request arguments for @google/genai.
+   * Correctly places configuration in 'config' and system instructions at the root.
+   */
+  private buildGenerateContentArgs(
+    options: AIRequestOptions,
+    formattedMessages: Content[],
+    systemInstructionContent?: Content
+  ) {
+    const { model, maxTokens, budgetTokens, useImageGeneration } = options;
 
-    const generationConfig: GenerationConfig = {};
+    // The 'config' object maps to 'generationConfig' in the API
+    const config: any = {};
+
     if (maxTokens) {
-      generationConfig.maxOutputTokens = maxTokens;
+      config.maxOutputTokens = maxTokens;
     }
-    // --- GEMINI 3 THINKING CONFIGURATION ---
+
     if (this.isThinkingCapable) {
-      (generationConfig as any).thinkingConfig = {
+      config.thinkingConfig = {
         includeThoughts: true,
       };
-
-      // Map budgetTokens to thinking_level
-      if (budgetTokens === 0) {
-        // Explicitly disabled/low reasoning
-        (generationConfig as any).thinkingConfig.thinking_level = "low";
-      } else {
-        // Default to high if thinking is enabled, as Gemini 3 is dynamic/high by default
-        // We ignore the specific 'number' of budgetTokens as Gemini 3 uses levels.
-        (generationConfig as any).thinkingConfig.thinking_level = "high";
+      if (budgetTokens && budgetTokens > 0) {
+        config.thinkingConfig.thinkingBudget = budgetTokens;
+      } else if (budgetTokens === 0) {
+        // Budget of 0 effectively disables thinking if the model allows it
+        config.thinkingConfig.thinkingBudget = 0;
       }
     }
-    if (this.isImageGenerationCapable) {
-      (generationConfig as any).responseModalities = ["Text", "Image"];
+
+    // Handle Image Generation Modalities
+    // Gemini 3 Pro (Nano Banana Pro) requires explicitly asking for IMAGE modality
+    if (this.isImageGenerationCapable && useImageGeneration) {
+      config.responseModalities = [Modality.TEXT, Modality.IMAGE];
     }
 
-    const formattedMessages = await this.mapMessagesToGoogleContent(messages);
+    const args: any = {
+      model: model,
+      contents: formattedMessages,
+      config: config, // Correct placement for generation parameters
+    };
 
+    if (systemInstructionContent) {
+      args.systemInstruction = systemInstructionContent; // Correct placement for system instruction
+    }
+
+    return args;
+  }
+
+  async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
+    const { messages, systemPrompt } = options;
+
+    const formattedMessages = await this.mapMessagesToGoogleContent(messages);
     let systemInstructionContent: Content | undefined = undefined;
     if (systemPrompt) {
       systemInstructionContent = {
@@ -164,20 +169,11 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       };
     }
 
-    const generateContentArgs: any = {
-      model: model,
-      contents: formattedMessages,
-      generationConfig: generationConfig,
-    };
-    if (systemInstructionContent) {
-      generateContentArgs.systemInstruction = systemInstructionContent;
-    }
-
-    if (this.isImageGenerationCapable && useImageGeneration) {
-      generateContentArgs.config = {
-        responseModalities: [Modality.TEXT, Modality.IMAGE],
-      };
-    }
+    const generateContentArgs = this.buildGenerateContentArgs(
+      options,
+      formattedMessages,
+      systemInstructionContent
+    );
 
     let result: GenerateContentResponse;
     try {
@@ -195,24 +191,11 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         "Invalid response structure from @google/genai API (missing candidate or parts):",
         JSON.stringify(result)
       );
-      try {
-        if (responseCandidate && responseCandidate.content?.parts) {
-          const fallbackText =
-            responseCandidate.content.parts.map((p) => p.text).join("") || "";
-          if (fallbackText) {
-            return {
-              role: "assistant",
-              content: [{ type: "text", text: fallbackText }],
-              usage: undefined,
-            };
-          }
-        }
-      } catch (e) {
-        // Ignore fallback error
-      }
+      // Attempt to salvage text if present in a weird format, otherwise throw
       throw new Error("Invalid response structure from @google/genai API");
     }
 
+    // Calculate usage
     let usage: UsageResponse | undefined = undefined;
     if (responseUsageMetadata && this.inputTokenCost && this.outputTokenCost) {
       const promptTokens = responseUsageMetadata.promptTokenCount ?? 0;
@@ -231,29 +214,15 @@ export class GoogleAIAdapter implements AIVendorAdapter {
 
     const contentBlocks: ContentBlock[] = [];
     for (const part of responseCandidate.content.parts) {
-      const partAny = part as any;
-      
-      // 1. Capture Thought Signature
-      // Gemini 3 attaches signatures to parts. We store this in a ThinkingBlock.
-      // Even if there is no visible "thought" text, we need the signature.
-      if (partAny.thoughtSignature) {
+      // Check for thinking content
+      // Note: The SDK/API might return thought in different ways depending on version
+      // but 'thought: true' or specific part types are standard indicators.
+      if ((part as any).thought === true) {
         contentBlocks.push({
           type: "thinking",
-          thinking: partAny.thought === true ? part.text || "" : "", // Only show text if it's actual thought text
-          signature: partAny.thoughtSignature,
+          thinking: part.text || "",
+          signature: "google",
         });
-      }
-
-      // 2. Handle Content
-      if (partAny.thought === true) {
-        // If we didn't capture the signature above (e.g. legacy thought), capture text here
-        if (!partAny.thoughtSignature) {
-           contentBlocks.push({
-            type: "thinking",
-            thinking: part.text || "",
-            signature: "google-legacy",
-          });
-        }
       } else if (part.text) {
         contentBlocks.push({ type: "text", text: part.text });
       } else if (part.inlineData) {
@@ -262,6 +231,16 @@ export class GoogleAIAdapter implements AIVendorAdapter {
           mimeType: part.inlineData.mimeType,
           base64Data: part.inlineData.data,
         } as ImageDataBlock);
+      }
+    }
+
+    // Fallback if no parts were processed (e.g., pure text without explicit types)
+    if (contentBlocks.length === 0) {
+      const fallbackText = responseCandidate.content.parts
+        .map((p) => p.text)
+        .join("");
+      if (fallbackText) {
+        contentBlocks.push({ type: "text", text: fallbackText });
       }
     }
 
@@ -280,25 +259,17 @@ export class GoogleAIAdapter implements AIVendorAdapter {
     );
   }
 
-  // **** THIS IS THE CORRECTED METHOD ****
   async sendChat(chat: Chat): Promise<ChatResponse> {
-    // Start with a copy of the history
     const messages: Message[] = [...chat.responseHistory];
-
-    // Create the new user message content
     const currentUserContent: ContentBlock[] = [];
 
-    // Add the text prompt if it exists
     if (chat.prompt) {
       currentUserContent.push({ type: "text", text: chat.prompt });
     }
-
-    // Add the image from visionUrl if it exists
     if (chat.visionUrl) {
       currentUserContent.push({ type: "image", url: chat.visionUrl });
     }
 
-    // Add the new user message to the array if it has content
     if (currentUserContent.length > 0) {
       messages.push({
         role: "user",
@@ -306,18 +277,16 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       });
     }
 
-    // Prepare the options for generateResponse
     const options: AIRequestOptions = {
       model: chat.model,
-      messages: messages, // Pass the newly constructed messages array
+      messages: messages,
       maxTokens: chat.maxTokens || undefined,
       budgetTokens: chat.budgetTokens || undefined,
       systemPrompt: chat.systemPrompt,
-      // visionUrl is no longer passed here
+      useImageGeneration: true, // Critical for "Nano Banana Pro" image features
     };
 
     const response = await this.generateResponse(options);
-
     return {
       role: response.role,
       content: response.content,
@@ -328,50 +297,9 @@ export class GoogleAIAdapter implements AIVendorAdapter {
   async *streamResponse(
     options: AIRequestOptions
   ): AsyncGenerator<ContentBlock, void, unknown> {
-    const {
-      model,
-      messages,
-      maxTokens,
-      budgetTokens,
-      systemPrompt,
-      useImageGeneration,
-      temperature,
-    } = options;
+    const { messages, systemPrompt, useImageGeneration } = options;
 
-    const generationConfig: GenerationConfig = {};
-    if (maxTokens) {
-      generationConfig.maxOutputTokens = maxTokens;
-    }
-
-    // --- GEMINI 3 THINKING CONFIGURATION ---
-    if (this.isThinkingCapable) {
-      (generationConfig as any).thinkingConfig = {
-        includeThoughts: true,
-      };
-
-      // Map budgetTokens to thinking_level
-      if (budgetTokens === 0) {
-        // Explicitly disabled/low reasoning (fastest)
-        (generationConfig as any).thinkingConfig.thinking_level = "low";
-      } else {
-        // Default to high if thinking is enabled. 
-        // Gemini 3 uses 'high' for deep reasoning, 'medium' is coming soon.
-        (generationConfig as any).thinkingConfig.thinking_level = "high";
-      }
-    }
-
-    // Gemini 3 recommends Temperature 1.0. 
-    if (temperature !== undefined) {
-      generationConfig.temperature = temperature;
-    }
-
-    if (this.isImageGenerationCapable) {
-      (generationConfig as any).responseModalities = ["Text", "Image"];
-    }
-
-    // Use the updated mapping logic (includes media_resolution_high handling)
     const formattedMessages = await this.mapMessagesToGoogleContent(messages);
-
     let systemInstructionContent: Content | undefined = undefined;
     if (systemPrompt) {
       systemInstructionContent = {
@@ -380,78 +308,115 @@ export class GoogleAIAdapter implements AIVendorAdapter {
       };
     }
 
-    const generateContentArgs: any = {
-      model: model,
-      contents: formattedMessages,
-      generationConfig: generationConfig,
-    };
-    if (systemInstructionContent) {
-      generateContentArgs.systemInstruction = systemInstructionContent;
-    }
-    if (this.isImageGenerationCapable && useImageGeneration) {
-      generateContentArgs.config = {
-        responseModalities: [Modality.TEXT, Modality.IMAGE],
-      };
-    }
+    const generateContentArgs = this.buildGenerateContentArgs(
+      options,
+      formattedMessages,
+      systemInstructionContent
+    );
 
     try {
+      // -----------------------------------------------------------------------
+      // FIX: Handle Image Generation via Non-Streaming Fallback
+      // Google GenAI (Imagen 3/Gemini) typically does NOT support streaming
+      // when generating images. We must use the standard generateContent
+      // and simulate a stream.
+      // -----------------------------------------------------------------------
+      if (this.isImageGenerationCapable && useImageGeneration) {
+        const result = await this.client.models.generateContent(
+          generateContentArgs
+        );
+
+        const candidate = result?.candidates?.[0];
+        const usageMetadata = result?.usageMetadata;
+
+        if (candidate && candidate.content?.parts) {
+          for (const part of candidate.content.parts) {
+            if ((part as any).thought === true) {
+              yield {
+                type: "thinking",
+                thinking: part.text || "",
+                signature: "google",
+              };
+            } else if (part.text) {
+              yield {
+                type: "text",
+                text: part.text,
+              };
+            } else if (part.inlineData) {
+              yield {
+                type: "image_data",
+                mimeType: part.inlineData.mimeType || "image/png",
+                base64Data: part.inlineData.data || "",
+              };
+            }
+          }
+        }
+
+        // Yield usage at the end for the simulated stream
+        if (usageMetadata && this.inputTokenCost && this.outputTokenCost) {
+          const promptTokens = usageMetadata.promptTokenCount ?? 0;
+          const candidateTokens = usageMetadata.candidatesTokenCount ?? 0;
+          const inputCost = computeResponseCost(
+            promptTokens,
+            this.inputTokenCost
+          );
+          const outputCost = computeResponseCost(
+            candidateTokens,
+            this.outputTokenCost
+          );
+
+          yield {
+            type: "meta",
+            responseId: `google-gen-${Date.now()}`,
+            usage: {
+              inputCost,
+              outputCost,
+              totalCost: inputCost + outputCost,
+              didGenerateImage: true,
+            },
+          };
+        }
+        return; // End generator
+      }
+
+      // -----------------------------------------------------------------------
+      // Standard Streaming (Text/Thinking)
+      // -----------------------------------------------------------------------
       const responseStream = await this.client.models.generateContentStream(
         generateContentArgs
       );
 
       let finalPromptTokens = 0;
       let finalCandidateTokens = 0;
-      let finalTotalTokens = 0;
       let responseId: string | undefined = undefined;
 
       for await (const chunk of responseStream) {
-        // Track usage metadata if present
         if (chunk.usageMetadata) {
           finalPromptTokens =
             chunk.usageMetadata.promptTokenCount ?? finalPromptTokens;
           finalCandidateTokens =
             chunk.usageMetadata.candidatesTokenCount ?? finalCandidateTokens;
-          finalTotalTokens =
-            chunk.usageMetadata.totalTokenCount ?? finalTotalTokens;
         }
 
         const candidate = chunk.candidates?.[0];
-
         if (!candidate || !candidate.content?.parts) {
           continue;
         }
 
         for (const part of candidate.content.parts) {
-          const partAny = part as any;
-
-          // 1. CRITICAL: Capture Thought Signature
-          // Gemini 3 sends signatures, sometimes in empty text chunks at the end.
-          if (partAny.thoughtSignature) {
-            yield {
-              type: "thinking",
-              // Only include text if 'thought' is also true, otherwise it's just a signature container
-              thinking: partAny.thought === true ? part.text || "" : "",
-              signature: partAny.thoughtSignature,
-            };
-          } 
-          // 2. Standard Thinking (Text without explicit new signature field yet)
-          else if (partAny.thought === true) {
+          if ((part as any).thought === true) {
             yield {
               type: "thinking",
               thinking: part.text || "",
-              // Fallback if no signature provided in this chunk
-              signature: "google", 
+              signature: "google",
             };
-          } 
-          // 3. Standard Text
-          else if (part.text) {
+          } else if (part.text) {
             yield {
               type: "text",
               text: part.text,
             };
-          } 
-          // 4. Inline Images
-          else if (part.inlineData) {
+          } else if (part.inlineData) {
+            // Unlikely to be hit in streaming mode, but good safety
             yield {
               type: "image_data",
               mimeType: part.inlineData.mimeType || "image/png",
@@ -461,7 +426,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
         }
       }
 
-      // Yield final meta block with usage data if available
+      // Yield final meta block
       if (
         this.inputTokenCost &&
         this.outputTokenCost &&
@@ -475,16 +440,14 @@ export class GoogleAIAdapter implements AIVendorAdapter {
           finalCandidateTokens,
           this.outputTokenCost
         );
-        const usage: UsageResponse = {
-          inputCost: inputCost,
-          outputCost: outputCost,
-          totalCost: inputCost + outputCost,
-        };
-
         yield {
           type: "meta",
           responseId: responseId || `google-stream-${Date.now()}`,
-          usage: usage,
+          usage: {
+            inputCost: inputCost,
+            outputCost: outputCost,
+            totalCost: inputCost + outputCost,
+          },
         };
       }
     } catch (error) {
