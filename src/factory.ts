@@ -5,7 +5,8 @@ import { OpenAIAdapter } from "./vendors/openai";
 import { AnthropicAdapter } from "./vendors/anthropic";
 import { GoogleAIAdapter } from "./vendors/google";
 import { OpenRouterAdapter } from "./vendors/openrouter";
-import { OpenAIImageAdapter } from "./vendors/openai-image"; // Added import
+import { OpenAIImageAdapter } from "./vendors/openai-image";
+import { GrokAdapter } from "./vendors/grok";
 
 export class AIVendorFactory {
   private static vendorConfigs: Map<string, VendorConfig> = new Map();
@@ -43,8 +44,11 @@ export class AIVendorFactory {
       case "openrouter":
         adapter = new OpenRouterAdapter(config, modelConfig);
         break;
-      case "openai-image": // Added case for the new adapter
+      case "openai-image":
         adapter = new OpenAIImageAdapter(config, modelConfig);
+        break;
+      case "grok":
+        adapter = new GrokAdapter(config, modelConfig);
         break;
       default:
         throw new Error(`Unsupported vendor: ${vendorName}`);
