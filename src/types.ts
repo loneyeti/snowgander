@@ -186,6 +186,10 @@ export interface AIRequestOptions {
   openaiImageEditOptions?: OpenAIImageEditOptions;
   // New: Specific flag to control image generation per request
   useImageGeneration?: boolean;
+  // Claude 4.6+ specific options
+  effort?: "low" | "medium" | "high"; // Effort level for adaptive thinking (Claude 4.6+)
+  outputFormat?: any; // Structured output format for output_config (Claude 4.6+)
+  topP?: number; // Top-p sampling (alternative to temperature, only for Claude 3.x)
 }
 
 // --- OpenAI Image API Specific Options ---

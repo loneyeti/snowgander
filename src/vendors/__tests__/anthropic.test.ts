@@ -848,4 +848,304 @@ describe("AnthropicAdapter", () => {
       );
     });
   });
+
+  describe("Claude 4.6 support", () => {
+    const mockClaude46: ModelConfig = {
+      apiName: "claude-opus-4-6",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 15 / 1_000_000,
+      outputTokenCost: 75 / 1_000_000,
+    };
+
+    const mockClaudeSonnet45: ModelConfig = {
+      apiName: "claude-sonnet-4-5-20250929",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 3 / 1_000_000,
+      outputTokenCost: 15 / 1_000_000,
+    };
+
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Hello Claude!" }] },
+    ];
+
+    it("should use adaptive thinking with effort for Claude 4.6+ models", async () => {
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_46",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockClaude46.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const options: AIRequestOptions = {
+        model: mockClaude46.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 10000,
+      };
+
+      await adapter46.generateResponse(options);
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" },
+        })
+      );
+    });
+
+    it("should use explicit effort parameter over budgetTokens for 4.6+ models", async () => {
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_46_effort",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockClaude46.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const options: AIRequestOptions = {
+        model: mockClaude46.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 10000, // Would map to "high"
+        effort: "low", // But explicit effort should take precedence
+      };
+
+      await adapter46.generateResponse(options);
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "low" },
+        })
+      );
+    });
+
+    it("should use budget_tokens for Claude 3.x models (backward compatibility)", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_3x",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockClaude3Opus.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const options: AIRequestOptions = {
+        model: mockClaude3Opus.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 5000,
+      };
+
+      await adapter.generateResponse(options);
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: {
+            type: "enabled",
+            budget_tokens: 5000,
+          },
+        })
+      );
+    });
+
+    it("should throw error when both temperature and topP are provided for Claude 4+ models", async () => {
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+
+      const options: AIRequestOptions = {
+        model: mockClaude46.apiName,
+        messages: basicMessages,
+        temperature: 0.7,
+        topP: 0.9,
+      };
+
+      await expect(adapter46.generateResponse(options)).rejects.toThrow(
+        /do not support using both temperature and top_p/
+      );
+    });
+
+    it("should allow topP for Claude 3.x models", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_3x_topp",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockClaude3Opus.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const options: AIRequestOptions = {
+        model: mockClaude3Opus.apiName,
+        messages: basicMessages,
+        temperature: 0.7,
+        topP: 0.9,
+      };
+
+      await adapter.generateResponse(options);
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          temperature: 0.7,
+          top_p: 0.9,
+        })
+      );
+    });
+
+    it("should handle refusal stop reason", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_refuse",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: mockClaude46.apiName,
+        stop_reason: "refusal" as any, // Type assertion since SDK types may not include this yet
+        usage: { input_tokens: 10, output_tokens: 0 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+      const options: AIRequestOptions = {
+        model: mockClaude46.apiName,
+        messages: basicMessages,
+      };
+
+      const response = await adapter46.generateResponse(options);
+
+      expect(response.content).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          publicMessage: expect.stringContaining("declined to respond"),
+        })
+      );
+    });
+
+    it("should handle model_context_window_exceeded stop reason", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_context",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Partial response..." }],
+        model: mockClaude46.apiName,
+        stop_reason: "model_context_window_exceeded" as any,
+        usage: { input_tokens: 100000, output_tokens: 50 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+      const options: AIRequestOptions = {
+        model: mockClaude46.apiName,
+        messages: basicMessages,
+      };
+
+      const response = await adapter46.generateResponse(options);
+
+      expect(response.content).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          publicMessage: expect.stringContaining("context limit"),
+        })
+      );
+    });
+
+    it("should map budgetTokens to effort levels correctly", async () => {
+      const testCases = [
+        { budgetTokens: 0, expectedEffort: "low" },
+        { budgetTokens: 4000, expectedEffort: "medium" },
+        { budgetTokens: 10000, expectedEffort: "high" },
+      ];
+
+      const adapter46 = new AnthropicAdapter(mockConfig, mockClaude46);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      for (const { budgetTokens, expectedEffort } of testCases) {
+        mockMessagesCreate.mockClear();
+
+        const mockApiResponse = {
+          id: "msg_effort",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello!" }],
+          model: mockClaude46.apiName,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+        mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+        await adapter46.generateResponse({
+          model: mockClaude46.apiName,
+          messages: basicMessages,
+          thinkingMode: true,
+          budgetTokens,
+        });
+
+        expect(mockMessagesCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            output_config: { effort: expectedEffort },
+          })
+        );
+      }
+    });
+
+    it("should support Sonnet 4.5 with adaptive thinking", async () => {
+      const adapterSonnet45 = new AnthropicAdapter(
+        mockConfig,
+        mockClaudeSonnet45
+      );
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_sonnet45",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockClaudeSonnet45.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      await adapterSonnet45.generateResponse({
+        model: mockClaudeSonnet45.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        effort: "medium",
+      });
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "medium" },
+        })
+      );
+    });
+  });
 });

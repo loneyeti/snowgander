@@ -51,6 +51,44 @@ export class AnthropicAdapter implements AIVendorAdapter {
     }
   }
 
+  /**
+   * Detect Claude model generation from model name
+   * @param modelName - The model identifier (e.g., "claude-opus-4-6")
+   * @returns Model generation category
+   */
+  private getModelGeneration(modelName: string): "3.x" | "4.0-4.5" | "4.6+" {
+    // Claude 4.6+ patterns (Opus 4.6, Sonnet 4.5, Haiku 4.5)
+    if (
+      modelName.includes("claude-opus-4-6") ||
+      modelName.includes("claude-sonnet-4-5") ||
+      modelName.includes("claude-haiku-4-5")
+    ) {
+      return "4.6+";
+    }
+
+    // Claude 4.0-4.5 patterns
+    if (
+      modelName.includes("claude-opus-4") ||
+      modelName.includes("claude-sonnet-4")
+    ) {
+      return "4.0-4.5";
+    }
+
+    // Claude 3.x (default for older/unknown models)
+    return "3.x";
+  }
+
+  /**
+   * Map budgetTokens to effort level for Claude 4.6+ adaptive thinking
+   * @param budgetTokens - Token budget for thinking
+   * @returns Effort level (low/medium/high)
+   */
+  private mapBudgetToEffort(budgetTokens?: number): "low" | "medium" | "high" {
+    if (!budgetTokens || budgetTokens === 0) return "low";
+    if (budgetTokens < 8192) return "medium";
+    return "high";
+  }
+
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
     // Removed user fetching logic
     const {
@@ -61,7 +99,25 @@ export class AnthropicAdapter implements AIVendorAdapter {
       systemPrompt,
       thinkingMode,
       tools, // Destructure tools from options
+      effort,
+      outputFormat,
+      temperature,
+      topP,
     } = options;
+
+    // Validate sampling parameters (breaking change for Claude 4+)
+    if (temperature !== undefined && topP !== undefined) {
+      const modelGen = this.getModelGeneration(model);
+      if (modelGen !== "3.x") {
+        throw new Error(
+          `Claude ${modelGen} models do not support using both temperature and top_p. ` +
+            `Please provide only one sampling parameter.`
+        );
+      }
+    }
+
+    // Determine model generation for version-aware features
+    const modelGen = this.getModelGeneration(model);
 
     // Convert messages to Anthropic format
     // Convert messages to Anthropic format with inferred types
@@ -202,20 +258,57 @@ export class AnthropicAdapter implements AIVendorAdapter {
       };
     });
 
-    const response = await this.client.messages.create({
+    // Build request parameters based on model generation
+    const requestParams: any = {
       model,
       messages: formattedMessages,
       system: systemPrompt,
-      max_tokens: maxTokens || 1024, // Default to 1024 if maxTokens is undefined
-      ...(thinkingMode &&
-        this.isThinkingCapable && {
-          thinking: {
-            type: "enabled",
-            budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2), // Use provided budget or half of max tokens
-          },
-        }),
-      ...(tools && { tools }), // Pass tools if provided
-    });
+      max_tokens: maxTokens || 1024,
+    };
+
+    // Handle thinking mode based on model generation
+    if (thinkingMode && this.isThinkingCapable) {
+      if (modelGen === "4.6+") {
+        // Use adaptive thinking for Claude 4.6+
+        requestParams.thinking = { type: "adaptive" };
+
+        // Map budgetTokens to effort if provided, or use explicit effort parameter
+        if (budgetTokens !== undefined || effort) {
+          requestParams.output_config = {
+            effort: effort || this.mapBudgetToEffort(budgetTokens),
+          };
+        }
+      } else {
+        // Use legacy budget_tokens for Claude 3.x and 4.0-4.5 models
+        requestParams.thinking = {
+          type: "enabled",
+          budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
+        };
+      }
+    }
+
+    // Add structured output support for Claude 4.6+
+    if (outputFormat && modelGen === "4.6+") {
+      requestParams.output_config = {
+        ...requestParams.output_config,
+        format: outputFormat,
+      };
+    }
+
+    // Add sampling parameters
+    if (temperature !== undefined) {
+      requestParams.temperature = temperature;
+    }
+    if (topP !== undefined && modelGen === "3.x") {
+      requestParams.top_p = topP;
+    }
+
+    // Add tools if provided
+    if (tools) {
+      requestParams.tools = tools;
+    }
+
+    const response = await this.client.messages.create(requestParams);
 
     let usage: UsageResponse | undefined = undefined;
 
@@ -248,7 +341,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
         contentBlocks.push({
           type: "thinking",
           thinking: block.thinking,
-          signature: block.signature, 
+          signature: block.signature,
         });
       } else if (block.type === "text") {
         contentBlocks.push({
@@ -265,6 +358,27 @@ export class AnthropicAdapter implements AIVendorAdapter {
         });
       }
       // Skip any other unknown block types
+    }
+
+    // Handle new stop reasons (Claude 4.5+)
+    // Note: SDK types may not include these yet, so we check as strings
+    const stopReason = response.stop_reason as string;
+    if (stopReason === "refusal") {
+      console.warn("Model refused to respond to this request");
+      contentBlocks.push({
+        type: "error",
+        publicMessage: "The model declined to respond to this request.",
+        privateMessage: `Stop reason: ${stopReason}`,
+      });
+    }
+
+    if (stopReason === "model_context_window_exceeded") {
+      console.warn("Response stopped due to context window limit");
+      contentBlocks.push({
+        type: "error",
+        publicMessage: "Response stopped due to context limit.",
+        privateMessage: `Stop reason: ${stopReason}`,
+      });
     }
 
     // Removed usage calculation and user update logic
@@ -299,7 +413,25 @@ export class AnthropicAdapter implements AIVendorAdapter {
       systemPrompt,
       thinkingMode,
       tools,
+      effort,
+      outputFormat,
+      temperature,
+      topP,
     } = options;
+
+    // Validate sampling parameters (breaking change for Claude 4+)
+    if (temperature !== undefined && topP !== undefined) {
+      const modelGen = this.getModelGeneration(model);
+      if (modelGen !== "3.x") {
+        throw new Error(
+          `Claude ${modelGen} models do not support using both temperature and top_p. ` +
+            `Please provide only one sampling parameter.`
+        );
+      }
+    }
+
+    // Determine model generation for version-aware features
+    const modelGen = this.getModelGeneration(model);
 
     // This message formatting logic is copied from generateResponse and is correct.
     const formattedMessages = messages.map((msg) => {
@@ -408,20 +540,68 @@ export class AnthropicAdapter implements AIVendorAdapter {
     });
 
     try {
-      const stream = await this.client.messages.create({
+      // Build stream request parameters based on model generation
+      const baseStreamParams = {
         model,
         messages: formattedMessages,
         system: systemPrompt,
         max_tokens: maxTokens || 1024,
-        stream: true, // Enable streaming
-        ...(thinkingMode &&
-          this.isThinkingCapable && {
+        stream: true as const, // Use 'as const' to ensure TypeScript knows this is always true
+      };
+
+      // Build additional parameters
+      let thinkingParam = {};
+      let outputConfigParam = {};
+      let samplingParams = {};
+
+      // Handle thinking mode based on model generation
+      if (thinkingMode && this.isThinkingCapable) {
+        if (modelGen === "4.6+") {
+          // Use adaptive thinking for Claude 4.6+
+          thinkingParam = { thinking: { type: "adaptive" as const } };
+
+          // Map budgetTokens to effort if provided, or use explicit effort parameter
+          if (budgetTokens !== undefined || effort) {
+            outputConfigParam = {
+              output_config: {
+                effort: effort || this.mapBudgetToEffort(budgetTokens),
+              },
+            };
+          }
+        } else {
+          // Use legacy budget_tokens for Claude 3.x and 4.0-4.5 models
+          thinkingParam = {
             thinking: {
-              type: "enabled",
-              budget_tokens:
-                budgetTokens || Math.floor((maxTokens || 1024) / 2),
+              type: "enabled" as const,
+              budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
             },
-          }),
+          };
+        }
+      }
+
+      // Add structured output support for Claude 4.6+
+      if (outputFormat && modelGen === "4.6+") {
+        outputConfigParam = {
+          output_config: {
+            ...(outputConfigParam as any).output_config,
+            format: outputFormat,
+          },
+        };
+      }
+
+      // Add sampling parameters
+      if (temperature !== undefined) {
+        samplingParams = { ...samplingParams, temperature };
+      }
+      if (topP !== undefined && modelGen === "3.x") {
+        samplingParams = { ...samplingParams, top_p: topP };
+      }
+
+      const stream = await this.client.messages.create({
+        ...baseStreamParams,
+        ...thinkingParam,
+        ...outputConfigParam,
+        ...samplingParams,
         ...(tools && { tools }),
       });
 

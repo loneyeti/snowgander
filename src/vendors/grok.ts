@@ -19,7 +19,7 @@ import { computeResponseCost } from "../utils";
 interface GrokChatCompletionChunkDelta {
   content?: string | null;
   role?: "system" | "user" | "assistant" | "tool";
-  reasoning_content?: string | null; // xAI specific field
+  reasoning_content?: string | null;
 }
 
 export class GrokAdapter implements AIVendorAdapter {
@@ -35,7 +35,7 @@ export class GrokAdapter implements AIVendorAdapter {
     this.modelConfig = modelConfig;
     this.client = new OpenAI({
       apiKey: config.apiKey,
-      baseURL: config.baseURL || "https://api.x.ai/v1", // Default to xAI API
+      baseURL: config.baseURL || "https://api.x.ai/v1",
       dangerouslyAllowBrowser: true,
     });
     this.isVisionCapable = modelConfig.isVision;
@@ -49,14 +49,25 @@ export class GrokAdapter implements AIVendorAdapter {
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    // 1. Handle explicit Image Generation Request if options are present
-    if (options.openaiImageGenerationOptions && this.isImageGenerationCapable) {
+    const { model } = options;
+
+    // Route to Image Generation if:
+    // 1. Explicit options are provided
+    // 2. The flag useImageGeneration is true
+    // 3. The model name implies it is an image generation model (e.g., "grok-2-image-latest")
+    const isImageModel = model.toLowerCase().includes("-image");
+
+    if (
+      (options.openaiImageGenerationOptions ||
+        options.useImageGeneration ||
+        isImageModel) &&
+      this.isImageGenerationCapable
+    ) {
       return this.generateImage(options);
     }
 
-    // 2. Handle standard Chat Completion
-    const { model, messages, systemPrompt } = options;
-
+    // Otherwise, handle as Standard Chat Completion
+    const { messages, systemPrompt } = options;
     const apiMessages = this.mapMessages(messages, systemPrompt);
 
     const response = await this.client.chat.completions.create({
@@ -68,7 +79,7 @@ export class GrokAdapter implements AIVendorAdapter {
     const choice = response.choices[0];
     const contentBlocks: ContentBlock[] = [];
 
-    // Extract Reasoning/Thinking (xAI uses reasoning_content)
+    // Extract Reasoning/Thinking
     const messageRaw = choice.message as any;
     if (messageRaw.reasoning_content) {
       contentBlocks.push({
@@ -112,7 +123,7 @@ export class GrokAdapter implements AIVendorAdapter {
   }
 
   private async generateImage(options: AIRequestOptions): Promise<AIResponse> {
-    const { openaiImageGenerationOptions, prompt, messages } = options;
+    const { openaiImageGenerationOptions, prompt, messages, model } = options;
 
     // Determine the prompt: use explicit prompt or last user message
     let imagePrompt = prompt;
@@ -129,8 +140,11 @@ export class GrokAdapter implements AIVendorAdapter {
       throw new Error("No prompt provided for image generation");
     }
 
+    // Use the requested model, or fallback to a safe default if somehow empty
+    const imageModel = model || "grok-2-image-latest";
+
     const response = await this.client.images.generate({
-      model: "grok-2-image",
+      model: imageModel,
       prompt: imagePrompt,
       n: openaiImageGenerationOptions?.n || 1,
       response_format: "b64_json",
@@ -142,7 +156,6 @@ export class GrokAdapter implements AIVendorAdapter {
 
     const contentBlocks: ContentBlock[] = [];
 
-    // Fix: Check if response.data exists before iterating
     if (response.data) {
       response.data.forEach((img) => {
         if (img.b64_json) {
@@ -185,6 +198,23 @@ export class GrokAdapter implements AIVendorAdapter {
   ): AsyncGenerator<ContentBlock, void, unknown> {
     const { model, messages, systemPrompt } = options;
 
+    // Check if this is actually an image request coming through the stream path
+    const isImageModel = model.toLowerCase().includes("-image");
+    if (
+      (options.openaiImageGenerationOptions ||
+        options.useImageGeneration ||
+        isImageModel) &&
+      this.isImageGenerationCapable
+    ) {
+      // Image generation cannot be streamed in the traditional sense,
+      // so we await the generation and yield the result.
+      const response = await this.generateImage(options);
+      for (const block of response.content) {
+        yield block;
+      }
+      return;
+    }
+
     const apiMessages = this.mapMessages(messages, systemPrompt);
 
     const stream = await this.client.chat.completions.create({
@@ -225,7 +255,7 @@ export class GrokAdapter implements AIVendorAdapter {
     }
 
     for (const msg of messages) {
-      if (msg.role === "system") continue; // Handled via systemPrompt arg usually
+      if (msg.role === "system") continue;
 
       const contentParts: any[] = [];
 
