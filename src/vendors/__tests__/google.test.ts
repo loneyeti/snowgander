@@ -22,7 +22,11 @@ const mockGoogleGenAIConstructor = jest.fn().mockImplementation(() => ({
 // --- Mock the SDK using jest.doMock (not hoisted) ---
 jest.doMock("@google/genai", () => ({
   GoogleGenAI: mockGoogleGenAIConstructor,
-  // CRITICAL FIX: Mock the enum used in the implementation
+  Modality: {
+    TEXT: "TEXT",
+    IMAGE: "IMAGE",
+    AUDIO: "AUDIO",
+  },
   PartMediaResolutionLevel: {
     MEDIA_RESOLUTION_HIGH: "MEDIA_RESOLUTION_HIGH",
   },
@@ -115,7 +119,7 @@ describe("GoogleAIAdapter", () => {
       expect(mockGenerateContent).toHaveBeenCalledWith({
         model: mockGeminiPro.apiName,
         contents: [{ role: "user", parts: [{ text: "Hello Gemini!" }] }],
-        generationConfig: {},
+        config: {},
       });
     });
 

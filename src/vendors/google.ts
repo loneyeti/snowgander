@@ -4,6 +4,7 @@ import {
   Part,
   GenerateContentResponse,
   Modality,
+  PartMediaResolutionLevel,
 } from "@google/genai";
 import {
   AIVendorAdapter,
@@ -69,6 +70,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                 mimeType: block.mimeType,
                 data: block.base64Data,
               },
+              mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH },
             });
           } else if (block.type === "image" && this.isVisionCapable) {
             try {
@@ -79,6 +81,7 @@ export class GoogleAIAdapter implements AIVendorAdapter {
                     mimeType: imageData.mimeType,
                     data: imageData.base64Data,
                   },
+                  mediaResolution: { level: PartMediaResolutionLevel.MEDIA_RESOLUTION_HIGH },
                 });
               }
             } catch (error) {
