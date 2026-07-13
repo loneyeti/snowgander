@@ -1,5 +1,5 @@
 import OpenAI, { toFile } from "openai"; // Import toFile
-import fetch from "node-fetch"; // Need fetch for handling URL images
+// Uses Node's built-in global fetch (stable since Node 18) for handling URL images
 import { Buffer } from "buffer"; // Need Buffer for base64 decoding
 import {
   AIVendorAdapter,

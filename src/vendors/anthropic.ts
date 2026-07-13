@@ -9,6 +9,7 @@ import {
   ChatResponse,
   ContentBlock,
   ToolUseBlock,
+  Message,
   // MCPTool, // MCPTool type might not be needed if sendMCPChat is removed/integrated
   UsageResponse,
   ImageBlock,
@@ -24,6 +25,44 @@ import {
 } from "@anthropic-ai/sdk/resources/messages";
 // Removed Prisma Model import
 // Removed application-specific imports (updateUserUsage, getCurrentAPIUser)
+
+// --- Model capability tiers ---
+//
+// Anthropic's request shape for thinking/effort/sampling parameters differs across
+// model generations. These two independent classifications drive that behavior:
+//
+// - Thinking tier: which thinking API a model speaks (legacy budget_tokens vs
+//   adaptive), and which effort levels are meaningful.
+// - Sampling policy: how many of temperature/top_p a model accepts. This is NOT
+//   1:1 with the thinking tier — e.g. Sonnet 4.5 and Haiku 4.5 use legacy
+//   budget_tokens thinking, but like every Claude 4+ model they reject sending
+//   both temperature and top_p together.
+type ThinkingTier = "legacyBudget" | "adaptiveTransitional" | "adaptiveOnly";
+type SamplingPolicy = "both" | "single" | "none";
+
+// Anthropic content-block param shapes used when formatting our messages for the
+// request. Kept local to this file since these are request-only shapes.
+type FormattedAnthropicContentBlock =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "thinking";
+      thinking: string;
+      signature: string;
+    }
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      content: string | Array<{ type: "text"; text: string }>;
+    }
+  | ToolUseBlockParam; // Add Anthropic's ToolUseBlockParam type
+
+type FormattedAnthropicMessage = {
+  role: "user" | "assistant";
+  content: string | FormattedAnthropicContentBlock[];
+};
 
 export class AnthropicAdapter implements AIVendorAdapter {
   private client: Anthropic;
@@ -52,41 +91,297 @@ export class AnthropicAdapter implements AIVendorAdapter {
   }
 
   /**
-   * Detect Claude model generation from model name
-   * @param modelName - The model identifier (e.g., "claude-opus-4-6")
-   * @returns Model generation category
+   * Classify a model into a thinking-capability tier. Checks are ordered
+   * most-specific-first so newer model families aren't accidentally caught by a
+   * broader/older pattern (e.g. "claude-opus-4-8" must be checked before a bare
+   * "claude-opus-4" fallback would ever be considered).
+   *
+   * Unknown/future model strings fall back to "legacyBudget" — the behavior every
+   * Claude model has supported since thinking was introduced, and the safest
+   * default until this table is updated for a new release.
+   *
+   * @param modelName - The model identifier (e.g., "claude-opus-4-8")
    */
-  private getModelGeneration(modelName: string): "3.x" | "4.0-4.5" | "4.6+" {
-    // Claude 4.6+ patterns (Opus 4.6, Sonnet 4.5, Haiku 4.5)
+  private getThinkingTier(modelName: string): ThinkingTier {
+    // Adaptive-only: thinking is always adaptive, budget_tokens is rejected (400),
+    // and effort supports the full low/medium/high/xhigh/max range.
+    if (
+      modelName.includes("claude-opus-4-7") ||
+      modelName.includes("claude-opus-4-8") ||
+      modelName.includes("claude-sonnet-5") ||
+      modelName.includes("claude-fable-5") ||
+      modelName.includes("claude-mythos-5")
+    ) {
+      return "adaptiveOnly";
+    }
+
+    // Adaptive-transitional: adaptive thinking is supported and recommended;
+    // effort supports low/medium/high/max (no xhigh).
     if (
       modelName.includes("claude-opus-4-6") ||
-      modelName.includes("claude-sonnet-4-5") ||
-      modelName.includes("claude-haiku-4-5")
+      modelName.includes("claude-sonnet-4-6")
     ) {
-      return "4.6+";
+      return "adaptiveTransitional";
     }
 
-    // Claude 4.0-4.5 patterns
-    if (
-      modelName.includes("claude-opus-4") ||
-      modelName.includes("claude-sonnet-4")
-    ) {
-      return "4.0-4.5";
-    }
-
-    // Claude 3.x (default for older/unknown models)
-    return "3.x";
+    // Legacy: Claude 3.x, Opus 4.0/4.1/4.5, Sonnet 4.0/4.5, Haiku 3.x/4.5, and any
+    // unrecognized/future model string. Thinking (if supported) uses
+    // {type: "enabled", budget_tokens}; no output_config/effort support.
+    return "legacyBudget";
   }
 
   /**
-   * Map budgetTokens to effort level for Claude 4.6+ adaptive thinking
-   * @param budgetTokens - Token budget for thinking
+   * Classify a model's sampling-parameter (temperature/top_p) constraints.
+   * Independent from the thinking tier — see the type comment above.
+   *
+   * @param modelName - The model identifier (e.g., "claude-opus-4-8")
+   */
+  private getSamplingPolicy(modelName: string): SamplingPolicy {
+    // No Claude 4+ model accepts sampling parameters once it's adaptive-only.
+    if (this.getThinkingTier(modelName) === "adaptiveOnly") {
+      return "none";
+    }
+
+    // Claude 2.x / 3.x models accept temperature and top_p together.
+    if (modelName.includes("claude-3") || modelName.includes("claude-2")) {
+      return "both";
+    }
+
+    // Every other Claude 4.x-family model (4.0/4.1/4.5, the 4.6 family, Sonnet
+    // 4.5, Haiku 4.5, etc.) accepts at most one sampling parameter.
+    return "single";
+  }
+
+  /**
+   * Map budgetTokens to an effort level for adaptive-thinking tiers, used only
+   * when the caller hasn't provided an explicit `effort`. This heuristic only
+   * reaches low/medium/high — "xhigh" and "max" are only reachable via an
+   * explicit `effort` value, since there's no principled budget-token threshold
+   * to derive them from.
+   * @param budgetTokens - Token budget for thinking mode
    * @returns Effort level (low/medium/high)
    */
   private mapBudgetToEffort(budgetTokens?: number): "low" | "medium" | "high" {
     if (!budgetTokens || budgetTokens === 0) return "low";
     if (budgetTokens < 8192) return "medium";
     return "high";
+  }
+
+  /**
+   * Validates temperature/top_p against the model's sampling policy and returns
+   * the fragment to merge into the request params. Throws a descriptive error
+   * when the combination is invalid for this model, rather than letting an
+   * incompatible request reach the API as an opaque 400.
+   */
+  private buildSamplingParams(
+    model: string,
+    temperature: number | undefined,
+    topP: number | undefined
+  ): { temperature?: number; top_p?: number } {
+    const policy = this.getSamplingPolicy(model);
+
+    if (policy === "none") {
+      if (temperature !== undefined || topP !== undefined) {
+        throw new Error(
+          `Model '${model}' does not support sampling parameters (temperature, top_p). ` +
+            `Remove these parameters when using this model.`
+        );
+      }
+      return {};
+    }
+
+    if (policy === "single" && temperature !== undefined && topP !== undefined) {
+      throw new Error(
+        `Models like '${model}' do not support using both temperature and top_p. ` +
+          `Please provide only one sampling parameter.`
+      );
+    }
+
+    const params: { temperature?: number; top_p?: number } = {};
+    if (temperature !== undefined) {
+      params.temperature = temperature;
+    }
+    if (topP !== undefined) {
+      params.top_p = topP;
+    }
+    return params;
+  }
+
+  /**
+   * Builds the `thinking` / `output_config` request fragment for a given tier.
+   * Shared between generateResponse and streamResponse.
+   */
+  private buildThinkingParams(
+    tier: ThinkingTier,
+    thinkingMode: boolean | undefined,
+    budgetTokens: number | undefined,
+    maxTokens: number | undefined,
+    effort: AIRequestOptions["effort"],
+    outputFormat: any
+  ): { thinking?: any; output_config?: any } {
+    const result: { thinking?: any; output_config?: any } = {};
+
+    if (thinkingMode && this.isThinkingCapable) {
+      if (tier === "legacyBudget") {
+        // Use legacy budget_tokens for models without adaptive thinking support.
+        result.thinking = {
+          type: "enabled",
+          budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
+        };
+      } else {
+        // Use adaptive thinking for adaptiveTransitional/adaptiveOnly tiers.
+        result.thinking = { type: "adaptive" };
+
+        // Map budgetTokens to effort if provided, or use explicit effort parameter
+        if (budgetTokens !== undefined || effort) {
+          result.output_config = {
+            effort: effort || this.mapBudgetToEffort(budgetTokens),
+          };
+        }
+      }
+    }
+
+    // Structured output support is available on adaptive-capable tiers.
+    if (outputFormat && tier !== "legacyBudget") {
+      result.output_config = {
+        ...result.output_config,
+        format: outputFormat,
+      };
+    }
+
+    return result;
+  }
+
+  /**
+   * Converts our Message[]/ContentBlock[] format into Anthropic's request
+   * message shape. Shared between generateResponse and streamResponse so the
+   * two methods can't drift out of sync with each other.
+   */
+  private formatMessages(
+    messages: Message[],
+    model: string
+  ): FormattedAnthropicMessage[] {
+    return messages.map((msg) => {
+      const role =
+        msg.role === "assistant" ? ("assistant" as const) : ("user" as const);
+
+      if (typeof msg.content === "string") {
+        return { role, content: msg.content };
+      }
+
+      // Map our content blocks to Anthropic's ContentBlockParam format
+      const mappedContent = msg.content.reduce<FormattedAnthropicContentBlock[]>(
+        (acc, block) => {
+          if (block.type === "text") {
+            acc.push({
+              type: "text",
+              text: block.text,
+            });
+          } else if (block.type === "thinking") {
+            // Map thinking block - Although Anthropic doesn't accept these in requests,
+            // the test expects the formatting logic to handle them.
+            acc.push({
+              type: "thinking",
+              thinking: block.thinking,
+              signature: block.signature, // Assuming signature maps directly, adjust if needed
+            });
+          } else if (block.type === "tool_result" && msg.role === "user") {
+            // Handle tool_result specifically for user messages
+            // Anthropic expects tool_result content to be a string or an array of text blocks.
+            // We'll convert our ContentBlock[] to a simple string for now.
+            // TODO: Improve this to handle potential multiple text blocks in tool_result.content if needed.
+            const toolResultContent = block.content
+              .map((c) => (c.type === "text" ? c.text : JSON.stringify(c)))
+              .join("\n");
+
+            acc.push({
+              type: "tool_result",
+              tool_use_id: block.toolUseId, // Use the string ID directly
+              content: toolResultContent, // Send as string for simplicity
+              // Alternatively, format as [{ type: 'text', text: toolResultContent }] if preferred
+            });
+          } else if (block.type === "tool_use" && msg.role === "assistant") {
+            // Map tool_use blocks from assistant history correctly for the API request
+            // Ensure the ID exists and input is valid JSON
+            if (block.id && typeof block.input === "string") {
+              try {
+                const parsedInput = JSON.parse(block.input);
+                acc.push({
+                  type: "tool_use",
+                  id: block.id,
+                  name: block.name,
+                  input: parsedInput, // Anthropic expects the parsed object here
+                });
+              } catch (e) {
+                console.error(
+                  `Skipping tool_use block due to invalid JSON input: ${block.input}`,
+                  e
+                );
+              }
+            } else {
+              console.warn(
+                "Skipping tool_use block due to missing ID or invalid input type."
+              );
+            }
+          } else if (
+            block.type === "image" &&
+            this.isVisionCapable &&
+            msg.role === "user"
+          ) {
+            // Handle ImageBlock (URL) for vision-capable models in user messages
+            // Map to Anthropic's expected format based on their documentation example
+            acc.push({
+              type: "image",
+              source: {
+                type: "url",
+                // Ensure 'url' property exists on our ImageBlock type
+                url: block.url,
+              },
+            } as any); // Use 'as any' for now if the SDK type doesn't perfectly align or needs broader compatibility
+          } else if (
+            block.type === "image_data" &&
+            this.isVisionCapable &&
+            msg.role === "user"
+          ) {
+            // Handle ImageDataBlock (base64) - Anthropic example only shows URL source.
+            // Warn the developer, as this might not be directly supported or requires different formatting.
+            console.warn(
+              "Anthropic adapter received ImageDataBlock (base64). Anthropic API example uses URL source. Skipping image. Check Anthropic documentation for base64 support."
+            );
+            // If Anthropic *did* support base64 via a specific format (e.g., type: 'base64'), the mapping would go here.
+            // Example (hypothetical, verify with docs):
+            // acc.push({
+            //   type: "image",
+            //   source: {
+            //     type: "base64",
+            //     media_type: block.mimeType,
+            //     data: block.base64Data,
+            //   }
+            // } as any);
+          } else if (
+            (block.type === "image" || block.type === "image_data") &&
+            (!this.isVisionCapable || msg.role !== "user")
+          ) {
+            // Skip images if model isn't vision capable or if not in a user message
+            console.warn(
+              `Skipping image block (type: ${block.type}) in role '${msg.role}' for model '${model}'. Vision capable: ${this.isVisionCapable}`
+            );
+          }
+          // Note: Image blocks are now handled above.
+          return acc;
+        },
+        []
+      );
+
+      // If we have no valid content blocks, convert to a text block with the stringified content
+      return {
+        role,
+        content:
+          mappedContent.length > 0
+            ? mappedContent
+            : JSON.stringify(msg.content),
+      };
+    });
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
@@ -105,203 +400,35 @@ export class AnthropicAdapter implements AIVendorAdapter {
       topP,
     } = options;
 
-    // Validate sampling parameters (breaking change for Claude 4+)
-    if (temperature !== undefined && topP !== undefined) {
-      const modelGen = this.getModelGeneration(model);
-      if (modelGen !== "3.x") {
-        throw new Error(
-          `Claude ${modelGen} models do not support using both temperature and top_p. ` +
-            `Please provide only one sampling parameter.`
-        );
-      }
-    }
+    // Validate sampling parameters (throws a descriptive error for
+    // incompatible model/parameter combinations rather than an opaque 400)
+    const samplingParams = this.buildSamplingParams(model, temperature, topP);
 
-    // Determine model generation for version-aware features
-    const modelGen = this.getModelGeneration(model);
+    // Determine model tier for version-aware features
+    const tier = this.getThinkingTier(model);
 
     // Convert messages to Anthropic format
-    // Convert messages to Anthropic format with inferred types
-    const formattedMessages = messages.map((msg) => {
-      const role =
-        msg.role === "assistant" ? ("assistant" as const) : ("user" as const);
+    const formattedMessages = this.formatMessages(messages, model);
 
-      if (typeof msg.content === "string") {
-        return { role, content: msg.content };
-      }
+    // Build thinking / output_config request fragment
+    const thinkingParams = this.buildThinkingParams(
+      tier,
+      thinkingMode,
+      budgetTokens,
+      maxTokens,
+      effort,
+      outputFormat
+    );
 
-      // Map our content blocks to Anthropic's ContentBlockParam format
-      const mappedContent = msg.content.reduce<
-        Array<
-          | {
-              type: "text";
-              text: string;
-            }
-          | {
-              type: "thinking";
-              thinking: string;
-              signature: string;
-            }
-          | {
-              type: "tool_result";
-              tool_use_id: string;
-              content: string | Array<{ type: "text"; text: string }>;
-            }
-          | ToolUseBlockParam // Add Anthropic's ToolUseBlockParam type
-        >
-      >((acc, block) => {
-        if (block.type === "text") {
-          acc.push({
-            type: "text",
-            text: block.text,
-          });
-        } else if (block.type === "thinking") {
-          // Map thinking block - Although Anthropic doesn't accept these in requests,
-          // the test expects the formatting logic to handle them.
-          acc.push({
-            type: "thinking",
-            thinking: block.thinking,
-            signature: block.signature, // Assuming signature maps directly, adjust if needed
-          });
-        } else if (block.type === "tool_result" && msg.role === "user") {
-          // Handle tool_result specifically for user messages
-          // Anthropic expects tool_result content to be a string or an array of text blocks.
-          // We'll convert our ContentBlock[] to a simple string for now.
-          // TODO: Improve this to handle potential multiple text blocks in tool_result.content if needed.
-          const toolResultContent = block.content
-            .map((c) => (c.type === "text" ? c.text : JSON.stringify(c)))
-            .join("\n");
-
-          acc.push({
-            type: "tool_result",
-            tool_use_id: block.toolUseId, // Use the string ID directly
-            content: toolResultContent, // Send as string for simplicity
-            // Alternatively, format as [{ type: 'text', text: toolResultContent }] if preferred
-          });
-        } else if (block.type === "tool_use" && msg.role === "assistant") {
-          // Map tool_use blocks from assistant history correctly for the API request
-          // Ensure the ID exists and input is valid JSON
-          if (block.id && typeof block.input === "string") {
-            try {
-              const parsedInput = JSON.parse(block.input);
-              acc.push({
-                type: "tool_use",
-                id: block.id,
-                name: block.name,
-                input: parsedInput, // Anthropic expects the parsed object here
-              });
-            } catch (e) {
-              console.error(
-                `Skipping tool_use block due to invalid JSON input: ${block.input}`,
-                e
-              );
-            }
-          } else {
-            console.warn(
-              "Skipping tool_use block due to missing ID or invalid input type."
-            );
-          }
-        } else if (
-          block.type === "image" &&
-          this.isVisionCapable &&
-          msg.role === "user"
-        ) {
-          // Handle ImageBlock (URL) for vision-capable models in user messages
-          // Map to Anthropic's expected format based on their documentation example
-          acc.push({
-            type: "image",
-            source: {
-              type: "url",
-              // Ensure 'url' property exists on our ImageBlock type
-              url: block.url,
-            },
-          } as any); // Use 'as any' for now if the SDK type doesn't perfectly align or needs broader compatibility
-        } else if (
-          block.type === "image_data" &&
-          this.isVisionCapable &&
-          msg.role === "user"
-        ) {
-          // Handle ImageDataBlock (base64) - Anthropic example only shows URL source.
-          // Warn the developer, as this might not be directly supported or requires different formatting.
-          console.warn(
-            "Anthropic adapter received ImageDataBlock (base64). Anthropic API example uses URL source. Skipping image. Check Anthropic documentation for base64 support."
-          );
-          // If Anthropic *did* support base64 via a specific format (e.g., type: 'base64'), the mapping would go here.
-          // Example (hypothetical, verify with docs):
-          // acc.push({
-          //   type: "image",
-          //   source: {
-          //     type: "base64",
-          //     media_type: block.mimeType,
-          //     data: block.base64Data,
-          //   }
-          // } as any);
-        } else if (
-          (block.type === "image" || block.type === "image_data") &&
-          (!this.isVisionCapable || msg.role !== "user")
-        ) {
-          // Skip images if model isn't vision capable or if not in a user message
-          console.warn(
-            `Skipping image block (type: ${block.type}) in role '${msg.role}' for model '${model}'. Vision capable: ${this.isVisionCapable}`
-          );
-        }
-        // Note: Image blocks are now handled above.
-        return acc;
-      }, []);
-
-      // If we have no valid content blocks, convert to a text block with the stringified content
-      return {
-        role,
-        content:
-          mappedContent.length > 0
-            ? mappedContent
-            : JSON.stringify(msg.content),
-      };
-    });
-
-    // Build request parameters based on model generation
+    // Build request parameters based on model tier
     const requestParams: any = {
       model,
       messages: formattedMessages,
       system: systemPrompt,
       max_tokens: maxTokens || 1024,
+      ...samplingParams,
+      ...thinkingParams,
     };
-
-    // Handle thinking mode based on model generation
-    if (thinkingMode && this.isThinkingCapable) {
-      if (modelGen === "4.6+") {
-        // Use adaptive thinking for Claude 4.6+
-        requestParams.thinking = { type: "adaptive" };
-
-        // Map budgetTokens to effort if provided, or use explicit effort parameter
-        if (budgetTokens !== undefined || effort) {
-          requestParams.output_config = {
-            effort: effort || this.mapBudgetToEffort(budgetTokens),
-          };
-        }
-      } else {
-        // Use legacy budget_tokens for Claude 3.x and 4.0-4.5 models
-        requestParams.thinking = {
-          type: "enabled",
-          budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
-        };
-      }
-    }
-
-    // Add structured output support for Claude 4.6+
-    if (outputFormat && modelGen === "4.6+") {
-      requestParams.output_config = {
-        ...requestParams.output_config,
-        format: outputFormat,
-      };
-    }
-
-    // Add sampling parameters
-    if (temperature !== undefined) {
-      requestParams.temperature = temperature;
-    }
-    if (topP !== undefined && modelGen === "3.x") {
-      requestParams.top_p = topP;
-    }
 
     // Add tools if provided
     if (tools) {
@@ -361,14 +488,20 @@ export class AnthropicAdapter implements AIVendorAdapter {
     }
 
     // Handle new stop reasons (Claude 4.5+)
-    // Note: SDK types may not include these yet, so we check as strings
     const stopReason = response.stop_reason as string;
     if (stopReason === "refusal") {
-      console.warn("Model refused to respond to this request");
+      const category = response.stop_details?.category;
+      console.warn(
+        `Model refused to respond to this request${
+          category ? ` (category: ${category})` : ""
+        }`
+      );
       contentBlocks.push({
         type: "error",
         publicMessage: "The model declined to respond to this request.",
-        privateMessage: `Stop reason: ${stopReason}`,
+        privateMessage: `Stop reason: ${stopReason}${
+          category ? `, category: ${category}` : ""
+        }`,
       });
     }
 
@@ -419,128 +552,18 @@ export class AnthropicAdapter implements AIVendorAdapter {
       topP,
     } = options;
 
-    // Validate sampling parameters (breaking change for Claude 4+)
-    if (temperature !== undefined && topP !== undefined) {
-      const modelGen = this.getModelGeneration(model);
-      if (modelGen !== "3.x") {
-        throw new Error(
-          `Claude ${modelGen} models do not support using both temperature and top_p. ` +
-            `Please provide only one sampling parameter.`
-        );
-      }
-    }
+    // Validate sampling parameters (throws a descriptive error for
+    // incompatible model/parameter combinations rather than an opaque 400)
+    const samplingParams = this.buildSamplingParams(model, temperature, topP);
 
-    // Determine model generation for version-aware features
-    const modelGen = this.getModelGeneration(model);
+    // Determine model tier for version-aware features
+    const tier = this.getThinkingTier(model);
 
-    // This message formatting logic is copied from generateResponse and is correct.
-    const formattedMessages = messages.map((msg) => {
-      const role =
-        msg.role === "assistant" ? ("assistant" as const) : ("user" as const);
-      if (typeof msg.content === "string") {
-        return { role, content: msg.content };
-      }
-      const mappedContent = msg.content.reduce<
-        Array<
-          | {
-              type: "text";
-              text: string;
-            }
-          | {
-              type: "thinking";
-              thinking: string;
-              signature: string;
-            }
-          | {
-              type: "tool_result";
-              tool_use_id: string;
-              content: string | Array<{ type: "text"; text: string }>;
-            }
-          | ToolUseBlockParam
-        >
-      >((acc, block) => {
-        if (block.type === "text") {
-          acc.push({
-            type: "text",
-            text: block.text,
-          });
-        } else if (block.type === "thinking") {
-          acc.push({
-            type: "thinking",
-            thinking: block.thinking,
-            signature: block.signature,
-          });
-        } else if (block.type === "tool_result" && msg.role === "user") {
-          const toolResultContent = block.content
-            .map((c) => (c.type === "text" ? c.text : JSON.stringify(c)))
-            .join("\n");
-          acc.push({
-            type: "tool_result",
-            tool_use_id: block.toolUseId,
-            content: toolResultContent,
-          });
-        } else if (block.type === "tool_use" && msg.role === "assistant") {
-          if (block.id && typeof block.input === "string") {
-            try {
-              const parsedInput = JSON.parse(block.input);
-              acc.push({
-                type: "tool_use",
-                id: block.id,
-                name: block.name,
-                input: parsedInput,
-              });
-            } catch (e) {
-              console.error(
-                `Skipping tool_use block due to invalid JSON input: ${block.input}`,
-                e
-              );
-            }
-          } else {
-            console.warn(
-              "Skipping tool_use block due to missing ID or invalid input type."
-            );
-          }
-        } else if (
-          block.type === "image" &&
-          this.isVisionCapable &&
-          msg.role === "user"
-        ) {
-          acc.push({
-            type: "image",
-            source: {
-              type: "url",
-              url: block.url,
-            },
-          } as any);
-        } else if (
-          block.type === "image_data" &&
-          this.isVisionCapable &&
-          msg.role === "user"
-        ) {
-          console.warn(
-            "Anthropic adapter received ImageDataBlock (base64). Anthropic API example uses URL source. Skipping image. Check Anthropic documentation for base64 support."
-          );
-        } else if (
-          (block.type === "image" || block.type === "image_data") &&
-          (!this.isVisionCapable || msg.role !== "user")
-        ) {
-          console.warn(
-            `Skipping image block (type: ${block.type}) in role '${msg.role}' for model '${model}'. Vision capable: ${this.isVisionCapable}`
-          );
-        }
-        return acc;
-      }, []);
-      return {
-        role,
-        content:
-          mappedContent.length > 0
-            ? mappedContent
-            : JSON.stringify(msg.content),
-      };
-    });
+    // This message formatting logic is shared with generateResponse.
+    const formattedMessages = this.formatMessages(messages, model);
 
     try {
-      // Build stream request parameters based on model generation
+      // Build stream request parameters based on model tier
       const baseStreamParams = {
         model,
         messages: formattedMessages,
@@ -549,58 +572,18 @@ export class AnthropicAdapter implements AIVendorAdapter {
         stream: true as const, // Use 'as const' to ensure TypeScript knows this is always true
       };
 
-      // Build additional parameters
-      let thinkingParam = {};
-      let outputConfigParam = {};
-      let samplingParams = {};
-
-      // Handle thinking mode based on model generation
-      if (thinkingMode && this.isThinkingCapable) {
-        if (modelGen === "4.6+") {
-          // Use adaptive thinking for Claude 4.6+
-          thinkingParam = { thinking: { type: "adaptive" as const } };
-
-          // Map budgetTokens to effort if provided, or use explicit effort parameter
-          if (budgetTokens !== undefined || effort) {
-            outputConfigParam = {
-              output_config: {
-                effort: effort || this.mapBudgetToEffort(budgetTokens),
-              },
-            };
-          }
-        } else {
-          // Use legacy budget_tokens for Claude 3.x and 4.0-4.5 models
-          thinkingParam = {
-            thinking: {
-              type: "enabled" as const,
-              budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
-            },
-          };
-        }
-      }
-
-      // Add structured output support for Claude 4.6+
-      if (outputFormat && modelGen === "4.6+") {
-        outputConfigParam = {
-          output_config: {
-            ...(outputConfigParam as any).output_config,
-            format: outputFormat,
-          },
-        };
-      }
-
-      // Add sampling parameters
-      if (temperature !== undefined) {
-        samplingParams = { ...samplingParams, temperature };
-      }
-      if (topP !== undefined && modelGen === "3.x") {
-        samplingParams = { ...samplingParams, top_p: topP };
-      }
+      const thinkingParams = this.buildThinkingParams(
+        tier,
+        thinkingMode,
+        budgetTokens,
+        maxTokens,
+        effort,
+        outputFormat
+      );
 
       const stream = await this.client.messages.create({
         ...baseStreamParams,
-        ...thinkingParam,
-        ...outputConfigParam,
+        ...thinkingParams,
         ...samplingParams,
         ...(tools && { tools }),
       });
@@ -856,8 +839,15 @@ export class AnthropicAdapter implements AIVendorAdapter {
       maxTokens: chat.maxTokens || undefined,
       budgetTokens: chat.budgetTokens || undefined,
       systemPrompt: chat.systemPrompt || undefined,
-      thinkingMode: (chat.budgetTokens ?? 0) > 0,
+      // Thinking is enabled if a budget was given OR an explicit effort was
+      // requested (adaptive-tier callers may want thinking on without setting
+      // a budgetTokens value at all).
+      thinkingMode: (chat.budgetTokens ?? 0) > 0 || !!chat.effort,
       tools: formattedTools, // Pass formatted tools
+      effort: chat.effort,
+      temperature: chat.temperature,
+      topP: chat.topP,
+      outputFormat: chat.outputFormat,
     });
 
     return {
