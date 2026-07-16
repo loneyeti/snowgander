@@ -112,34 +112,55 @@ To add support for a new AI vendor:
 **Unified Thinking/Reasoning:**
 Use `isThinkingCapable` flag, `budgetTokens` parameter, and `ThinkingBlock` type to handle both Anthropic's extended thinking and OpenRouter's reasoning features consistently.
 
-**Claude 4.6+ Support:**
-The Anthropic adapter automatically detects model versions and uses the appropriate API format:
+**Claude Model Support (3.x through Opus 4.8 / Sonnet 5 / Fable 5 / Mythos 5):**
+The Anthropic adapter (`src/vendors/anthropic.ts`) classifies each request's model into two
+*independent* tiers, rather than a single generation string, because Anthropic's thinking API
+and its sampling-parameter constraints don't change in lockstep across releases:
 
-- **Claude 4.6+ Models** (`claude-opus-4-6`, `claude-sonnet-4-5-20250929`, `claude-haiku-4-5-20251001`):
-  - Uses adaptive thinking: `thinking: {type: "adaptive"}`
-  - Maps `budgetTokens` to `effort` parameter (low: 0-1, medium: 1-8192, high: 8192+)
-  - Supports explicit `effort` parameter in `AIRequestOptions` (overrides budgetTokens mapping)
-  - Supports `outputFormat` for structured outputs via `output_config.format`
-  - Cannot use both `temperature` and `topP` (will throw error)
-  - Handles new stop reasons: `refusal`, `model_context_window_exceeded`
+- `getThinkingTier(model)` → `"legacyBudget" | "adaptiveTransitional" | "adaptiveOnly"` — controls
+  whether thinking uses `budget_tokens` or `{type: "adaptive"}`, and which `effort` levels are valid.
+- `getSamplingPolicy(model)` → `"both" | "single" | "none"` — controls how many of
+  `temperature`/`topP` may be sent. This does **not** track the thinking tier 1:1: e.g. Sonnet 4.5
+  and Haiku 4.5 use legacy `budget_tokens` thinking, but like every Claude 4+ model they still
+  reject sending both sampling params together.
 
-- **Legacy Models** (Claude 3.x, 4.0-4.5):
-  - Uses `thinking: {type: "enabled", budget_tokens: N}`
-  - Claude 3.x models support both temperature and topP simultaneously
-  - Claude 4.0-4.5 models only support temperature OR topP (not both)
+| Thinking tier | Models | Thinking request shape | Effort levels |
+|---|---|---|---|
+| `legacyBudget` (default/fallback) | Claude 3.x, Opus 4.0/4.1/4.5, Sonnet 4.0/4.5, Haiku 3.x/4.5, any unrecognized model | `thinking: {type: "enabled", budget_tokens: N}` | none — no `output_config` |
+| `adaptiveTransitional` | `claude-opus-4-6`, `claude-sonnet-4-6` | `thinking: {type: "adaptive"}` | low / medium / high / max |
+| `adaptiveOnly` | `claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5`, `claude-mythos-5` | `thinking: {type: "adaptive"}` only — `budget_tokens` is never sent | low / medium / high / xhigh / max |
+
+| Sampling policy | Models | Behavior |
+|---|---|---|
+| `both` | Claude 2.x / 3.x only | `temperature` and `topP` may both be sent |
+| `single` | Everything 4.x that isn't `adaptiveOnly` (4.0-4.5, the 4.6 family, Sonnet 4.5, Haiku 4.5, etc.) | At most one of `temperature`/`topP` — throws if both are set |
+| `none` | `adaptiveOnly` tier (Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5) | Throws if *either* `temperature` or `topP` is set at all |
+
+Other tier-driven behavior:
+- `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) is honored on both adaptive tiers; when
+  omitted, `budgetTokens` is mapped via a simple heuristic (`mapBudgetToEffort`) that only reaches
+  low/medium/high — `xhigh`/`max` require an explicit `effort` value.
+- `outputFormat` (structured outputs via `output_config.format`) is supported on both adaptive
+  tiers, not just `adaptiveOnly`.
+- Stop reason `refusal` includes `stop_details.category` (e.g. `"cyber"`, `"bio"`) in the
+  `ErrorBlock.privateMessage` when the SDK response provides it. `model_context_window_exceeded`
+  is also handled.
+- `sendChat()` forwards `effort`, `temperature`, `topP`, and `outputFormat` from `Chat` to
+  `generateResponse()` (all optional fields on `Chat` — omitting them preserves prior behavior for
+  existing callers). `thinkingMode` is derived as `(chat.budgetTokens ?? 0) > 0 || !!chat.effort`.
 
 Example:
 ```typescript
-// Claude 4.6 with adaptive thinking
+// Opus 4.8 (adaptiveOnly) — adaptive thinking, no sampling params allowed
 const response = await adapter.generateResponse({
-  model: 'claude-opus-4-6',
+  model: 'claude-opus-4-8',
   messages: [...],
   thinkingMode: true,
-  effort: 'high',  // or use budgetTokens for automatic mapping
+  effort: 'xhigh',  // or omit and use budgetTokens for automatic low/medium/high mapping
   maxTokens: 4096,
 });
 
-// Claude 3.x with legacy thinking
+// Claude 3.x (legacyBudget) — classic thinking, both sampling params allowed
 const response = await adapter.generateResponse({
   model: 'claude-3-opus-20240229',
   messages: [...],

@@ -119,6 +119,11 @@ export interface Chat {
   // Options specific to OpenAI Image Adapter, passed via Chat
   openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
   openaiImageEditOptions?: OpenAIImageEditOptions;
+  // Claude 4.6+ specific options (optional — omit to preserve prior behavior)
+  effort?: "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking
+  temperature?: number; // Sampling temperature (rejected outright on some newer models)
+  topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
+  outputFormat?: any; // Structured output format for output_config
 }
 
 // Represents an MCP Tool configuration
@@ -187,9 +192,9 @@ export interface AIRequestOptions {
   // New: Specific flag to control image generation per request
   useImageGeneration?: boolean;
   // Claude 4.6+ specific options
-  effort?: "low" | "medium" | "high"; // Effort level for adaptive thinking (Claude 4.6+)
+  effort?: "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking (Claude 4.6+)
   outputFormat?: any; // Structured output format for output_config (Claude 4.6+)
-  topP?: number; // Top-p sampling (alternative to temperature, only for Claude 3.x)
+  topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
 }
 
 // --- OpenAI Image API Specific Options ---

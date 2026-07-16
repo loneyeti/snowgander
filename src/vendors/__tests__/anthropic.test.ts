@@ -747,6 +747,47 @@ describe("AnthropicAdapter", () => {
       );
     });
 
+    it("should forward effort, temperature, topP, and outputFormat to generateResponse", async () => {
+      const schema = { type: "object", properties: {} };
+      const chatWithExtras: Chat = {
+        ...baseChat,
+        effort: "xhigh",
+        temperature: 0.4,
+        topP: 0.8,
+        outputFormat: schema,
+        prompt: "Use the extras",
+      } as Chat;
+
+      await adapter.sendChat(chatWithExtras);
+
+      expect(generateResponseSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          effort: "xhigh",
+          temperature: 0.4,
+          topP: 0.8,
+          outputFormat: schema,
+        })
+      );
+    });
+
+    it("should enable thinkingMode when effort is set even without budgetTokens", async () => {
+      const chatWithEffortOnly: Chat = {
+        ...baseChat,
+        effort: "high",
+        budgetTokens: null,
+        prompt: "Think, please",
+      } as Chat;
+
+      await adapter.sendChat(chatWithEffortOnly);
+
+      expect(generateResponseSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinkingMode: true,
+          effort: "high",
+        })
+      );
+    });
+
     it("should return the ChatResponse with content and usage from generateResponse", async () => {
       const chat: Chat = baseChat as Chat;
       const expectedUsage: UsageResponse = {
@@ -849,7 +890,7 @@ describe("AnthropicAdapter", () => {
     });
   });
 
-  describe("Claude 4.6 support", () => {
+  describe("Claude 4.6+ model support", () => {
     const mockClaude46: ModelConfig = {
       apiName: "claude-opus-4-6",
       isVision: true,
@@ -859,6 +900,54 @@ describe("AnthropicAdapter", () => {
       outputTokenCost: 75 / 1_000_000,
     };
 
+    const mockSonnet46: ModelConfig = {
+      apiName: "claude-sonnet-4-6",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 3 / 1_000_000,
+      outputTokenCost: 15 / 1_000_000,
+    };
+
+    const mockOpus47: ModelConfig = {
+      apiName: "claude-opus-4-7",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 5 / 1_000_000,
+      outputTokenCost: 25 / 1_000_000,
+    };
+
+    const mockOpus48: ModelConfig = {
+      apiName: "claude-opus-4-8",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 5 / 1_000_000,
+      outputTokenCost: 25 / 1_000_000,
+    };
+
+    const mockSonnet5: ModelConfig = {
+      apiName: "claude-sonnet-5",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 3 / 1_000_000,
+      outputTokenCost: 15 / 1_000_000,
+    };
+
+    const mockFable5: ModelConfig = {
+      apiName: "claude-fable-5",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 10 / 1_000_000,
+      outputTokenCost: 50 / 1_000_000,
+    };
+
+    // claude-sonnet-4-5 and claude-haiku-4-5 do NOT support adaptive thinking or
+    // effort per Anthropic's docs, despite the "4-5"/"4.5" naming resemblance to
+    // adaptive-capable models. These fixtures cover the legacy budget_tokens path.
     const mockClaudeSonnet45: ModelConfig = {
       apiName: "claude-sonnet-4-5-20250929",
       isVision: true,
@@ -866,6 +955,15 @@ describe("AnthropicAdapter", () => {
       isThinking: true,
       inputTokenCost: 3 / 1_000_000,
       outputTokenCost: 15 / 1_000_000,
+    };
+
+    const mockHaiku45: ModelConfig = {
+      apiName: "claude-haiku-4-5-20251001",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 1 / 1_000_000,
+      outputTokenCost: 5 / 1_000_000,
     };
 
     const basicMessages: Message[] = [
@@ -1115,7 +1213,11 @@ describe("AnthropicAdapter", () => {
       }
     });
 
-    it("should support Sonnet 4.5 with adaptive thinking", async () => {
+    // Sonnet 4.5 and Haiku 4.5 use the legacy budget_tokens thinking API, NOT
+    // adaptive thinking — they do not support the effort parameter. Passing
+    // `effort` alone (no budgetTokens) has no effect for these models; the
+    // legacy budget_tokens fallback heuristic still applies.
+    it("should use legacy budget_tokens for Sonnet 4.5 (no adaptive thinking support)", async () => {
       const adapterSonnet45 = new AnthropicAdapter(
         mockConfig,
         mockClaudeSonnet45
@@ -1137,14 +1239,399 @@ describe("AnthropicAdapter", () => {
         model: mockClaudeSonnet45.apiName,
         messages: basicMessages,
         thinkingMode: true,
-        effort: "medium",
+        effort: "medium", // Ignored — this tier doesn't use output_config/effort
+      });
+
+      const call = mockMessagesCreate.mock.calls[0][0];
+      expect(call.thinking).toEqual({
+        type: "enabled",
+        budget_tokens: 512, // Math.floor((maxTokens ?? 1024) / 2) fallback
+      });
+      expect(call.output_config).toBeUndefined();
+    });
+
+    it("should use legacy budget_tokens for Haiku 4.5 (no adaptive thinking support)", async () => {
+      const adapterHaiku45 = new AnthropicAdapter(mockConfig, mockHaiku45);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_haiku45",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockHaiku45.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      await adapterHaiku45.generateResponse({
+        model: mockHaiku45.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 3000,
+      });
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { type: "enabled", budget_tokens: 3000 },
+        })
+      );
+      const call = mockMessagesCreate.mock.calls[0][0];
+      expect(call.output_config).toBeUndefined();
+    });
+
+    it("should use adaptive thinking with effort for Sonnet 4.6 (adaptive-transitional tier)", async () => {
+      const adapterSonnet46 = new AnthropicAdapter(mockConfig, mockSonnet46);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_sonnet46",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockSonnet46.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      await adapterSonnet46.generateResponse({
+        model: mockSonnet46.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        effort: "max",
       });
 
       expect(mockMessagesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           thinking: { type: "adaptive" },
-          output_config: { effort: "medium" },
+          output_config: { effort: "max" },
         })
+      );
+    });
+
+    it.each([
+      ["Opus 4.7", () => mockOpus47],
+      ["Opus 4.8", () => mockOpus48],
+      ["Sonnet 5", () => mockSonnet5],
+      ["Fable 5", () => mockFable5],
+    ])(
+      "should use adaptive thinking with effort for %s (adaptive-only tier)",
+      async (_label, getModel) => {
+        const model = getModel();
+        const adaptiveOnlyAdapter = new AnthropicAdapter(mockConfig, model);
+        const { mockMessagesCreate } = getMockAnthropicClient();
+
+        const mockApiResponse = {
+          id: "msg_adaptive_only",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello!" }],
+          model: model.apiName,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+        mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+        await adaptiveOnlyAdapter.generateResponse({
+          model: model.apiName,
+          messages: basicMessages,
+          thinkingMode: true,
+          effort: "xhigh",
+        });
+
+        expect(mockMessagesCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            thinking: { type: "adaptive" },
+            output_config: { effort: "xhigh" },
+          })
+        );
+      }
+    );
+
+    it.each(["xhigh", "max"] as const)(
+      "should pass explicit effort '%s' through for adaptive-only models",
+      async (effort) => {
+        const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+        const { mockMessagesCreate } = getMockAnthropicClient();
+
+        const mockApiResponse = {
+          id: "msg_effort_level",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "Hello!" }],
+          model: mockOpus48.apiName,
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+        mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+        await adapter48.generateResponse({
+          model: mockOpus48.apiName,
+          messages: basicMessages,
+          thinkingMode: true,
+          effort,
+        });
+
+        expect(mockMessagesCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            output_config: { effort },
+          })
+        );
+      }
+    );
+
+    it("should never send budget_tokens for adaptive-only models, even when budgetTokens is provided", async () => {
+      const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_no_budget",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockOpus48.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      await adapter48.generateResponse({
+        model: mockOpus48.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 20000, // Only used for the effort heuristic — never sent raw.
+      });
+
+      const call = mockMessagesCreate.mock.calls[0][0];
+      expect(call.thinking).toEqual({ type: "adaptive" });
+      expect(call.output_config).toEqual({ effort: "high" });
+      expect(call.thinking.budget_tokens).toBeUndefined();
+    });
+
+    it("should throw when temperature alone is provided for adaptive-only models", async () => {
+      const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+
+      await expect(
+        adapter48.generateResponse({
+          model: mockOpus48.apiName,
+          messages: basicMessages,
+          temperature: 0.5,
+        })
+      ).rejects.toThrow(/does not support sampling parameters/);
+    });
+
+    it("should throw when topP alone is provided for adaptive-only models", async () => {
+      const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+
+      await expect(
+        adapter48.generateResponse({
+          model: mockOpus48.apiName,
+          messages: basicMessages,
+          topP: 0.9,
+        })
+      ).rejects.toThrow(/does not support sampling parameters/);
+    });
+
+    it("should throw when both temperature and topP are provided for adaptive-only models", async () => {
+      const adapterFable5 = new AnthropicAdapter(mockConfig, mockFable5);
+
+      await expect(
+        adapterFable5.generateResponse({
+          model: mockFable5.apiName,
+          messages: basicMessages,
+          temperature: 0.5,
+          topP: 0.9,
+        })
+      ).rejects.toThrow(/does not support sampling parameters/);
+    });
+
+    it("should throw when both temperature and topP are provided for Sonnet 4.6", async () => {
+      const adapterSonnet46 = new AnthropicAdapter(mockConfig, mockSonnet46);
+
+      await expect(
+        adapterSonnet46.generateResponse({
+          model: mockSonnet46.apiName,
+          messages: basicMessages,
+          temperature: 0.5,
+          topP: 0.9,
+        })
+      ).rejects.toThrow(/do not support using both temperature and top_p/);
+    });
+
+    it("should allow topP alone for Sonnet 4.6 (single sampling param permitted)", async () => {
+      const adapterSonnet46 = new AnthropicAdapter(mockConfig, mockSonnet46);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_sonnet46_topp",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Hello!" }],
+        model: mockSonnet46.apiName,
+        stop_reason: "end_turn",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      await adapterSonnet46.generateResponse({
+        model: mockSonnet46.apiName,
+        messages: basicMessages,
+        topP: 0.9,
+      });
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ top_p: 0.9 })
+      );
+      const call = mockMessagesCreate.mock.calls[0][0];
+      expect(call.temperature).toBeUndefined();
+    });
+
+    it("should include stop_details.category in the refusal error block when present", async () => {
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      const mockApiResponse = {
+        id: "msg_refuse_category",
+        type: "message",
+        role: "assistant",
+        content: [],
+        model: mockFable5.apiName,
+        stop_reason: "refusal" as any,
+        stop_details: { type: "refusal", category: "cyber", explanation: null },
+        usage: { input_tokens: 10, output_tokens: 0 },
+      };
+      mockMessagesCreate.mockResolvedValue(mockApiResponse);
+
+      const adapterFable5 = new AnthropicAdapter(mockConfig, mockFable5);
+      const response = await adapterFable5.generateResponse({
+        model: mockFable5.apiName,
+        messages: basicMessages,
+      });
+
+      expect(response.content).toContainEqual(
+        expect.objectContaining({
+          type: "error",
+          privateMessage: expect.stringContaining("cyber"),
+        })
+      );
+    });
+
+    describe("model tier classification", () => {
+      // Exercises the private tier-classification helpers directly against the
+      // full capability table, since many models share identical downstream
+      // request-building behavior and don't each need a full generateResponse
+      // round trip to prove correct bucketing.
+      const getTiers = (model: string) => {
+        const anyAdapter = adapter as any;
+        return {
+          thinkingTier: anyAdapter.getThinkingTier(model),
+          samplingPolicy: anyAdapter.getSamplingPolicy(model),
+        };
+      };
+
+      it.each([
+        ["claude-3-opus-20240229", "legacyBudget", "both"],
+        ["claude-3-5-sonnet-20241022", "legacyBudget", "both"],
+        ["claude-opus-4-5-20251101", "legacyBudget", "single"],
+        ["claude-opus-4-1-20250805", "legacyBudget", "single"],
+        ["claude-opus-4-20250514", "legacyBudget", "single"],
+        ["claude-sonnet-4-5-20250929", "legacyBudget", "single"],
+        ["claude-sonnet-4-20250514", "legacyBudget", "single"],
+        ["claude-haiku-4-5-20251001", "legacyBudget", "single"],
+        ["claude-opus-4-6", "adaptiveTransitional", "single"],
+        ["claude-sonnet-4-6", "adaptiveTransitional", "single"],
+        ["claude-opus-4-7", "adaptiveOnly", "none"],
+        ["claude-opus-4-8", "adaptiveOnly", "none"],
+        ["claude-sonnet-5", "adaptiveOnly", "none"],
+        ["claude-fable-5", "adaptiveOnly", "none"],
+        ["claude-mythos-5", "adaptiveOnly", "none"],
+        ["some-unknown-future-model", "legacyBudget", "single"],
+      ])(
+        "classifies %s as thinking tier '%s' and sampling policy '%s'",
+        (model, expectedTier, expectedPolicy) => {
+          const { thinkingTier, samplingPolicy } = getTiers(model);
+          expect(thinkingTier).toBe(expectedTier);
+          expect(samplingPolicy).toBe(expectedPolicy);
+        }
+      );
+    });
+  });
+
+  describe("streamResponse: Claude 4.6+ model support", () => {
+    const mockOpus48: ModelConfig = {
+      apiName: "claude-opus-4-8",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: true,
+      inputTokenCost: 5 / 1_000_000,
+      outputTokenCost: 25 / 1_000_000,
+    };
+
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Hello stream!" }] },
+    ];
+
+    it("should use adaptive thinking with effort when streaming an adaptive-only model", async () => {
+      const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+      const { mockMessagesCreate } = getMockAnthropicClient();
+
+      async function* mockStream() {
+        yield {
+          type: "message_start",
+          message: { id: "msg_stream_48", usage: { input_tokens: 10 } },
+        };
+        yield {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        };
+        yield {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Hi!" },
+        };
+        yield { type: "content_block_stop", index: 0 };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn" },
+          usage: { output_tokens: 3 },
+        };
+        yield { type: "message_stop" };
+      }
+      mockMessagesCreate.mockResolvedValue(mockStream());
+
+      const stream = adapter48.streamResponse({
+        model: mockOpus48.apiName,
+        messages: basicMessages,
+        thinkingMode: true,
+        effort: "high",
+      });
+      const chunks: ContentBlock[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      expect(mockMessagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thinking: { type: "adaptive" },
+          output_config: { effort: "high" },
+        })
+      );
+      expect(chunks[0]).toEqual({ type: "text", text: "Hi!" });
+    });
+
+    it("should reject sampling parameters when streaming an adaptive-only model", async () => {
+      const adapter48 = new AnthropicAdapter(mockConfig, mockOpus48);
+
+      const stream = adapter48.streamResponse({
+        model: mockOpus48.apiName,
+        messages: basicMessages,
+        temperature: 0.5,
+      });
+
+      await expect(stream.next()).rejects.toThrow(
+        /does not support sampling parameters/
       );
     });
   });

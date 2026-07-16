@@ -295,6 +295,47 @@ interface ChatResponse {
 2.  Iterate through the `content` array to process and display the different blocks appropriately (e.g., render text, display images, trigger tool execution).
 3.  **For conversations, add the entire response object to your `responseHistory`** so the AI has context for the next turn.
 
+## Anthropic Models: Thinking, Effort, and Sampling Parameters
+
+Snowgander stays a thin wrapper: to use a new Claude model (Opus 4.6/4.7/4.8, Sonnet 4.6/5, Fable 5, Mythos 5), just set `apiName` to the model string in your `ModelConfig` — no code changes to `generateResponse`, `streamResponse`, or `sendChat` are required. The Anthropic adapter detects the right request shape automatically based on the model string.
+
+**⚠️ One behavior change to be aware of when adopting the newest models:** `claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5`, and `claude-mythos-5` reject `temperature`/`topP` entirely — the adapter throws if **either** is set, not just both together. If your existing code always sets a default `temperature`, remove it (or branch on model) before pointing that same call at one of these models, or `generateResponse`/`sendChat` will throw instead of silently ignoring it.
+
+| Models | `temperature` / `topP` | `thinkingMode` behavior | `effort` levels |
+| --- | --- | --- | --- |
+| Claude 3.x | Both allowed together | `budgetTokens` → `budget_tokens` | n/a |
+| Opus 4.0–4.5, Sonnet 4.0/4.5, Haiku 3.x/4.5 | At most one | `budgetTokens` → `budget_tokens` | n/a |
+| Opus 4.6, Sonnet 4.6 | At most one | Adaptive thinking | `low` / `medium` / `high` / `max` |
+| Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5 | **Neither allowed** | Adaptive thinking only | `low` / `medium` / `high` / `xhigh` / `max` |
+
+For models that support adaptive thinking, `budgetTokens` is still accepted for backward compatibility and is automatically mapped to a reasonable `effort` level — or pass `effort` explicitly for direct control (including the newer `"xhigh"`/`"max"` levels):
+
+```typescript
+const options: AIRequestOptions = {
+  model: "claude-opus-4-8",
+  messages: [{ role: "user", content: [{ type: "text", text: "Solve this." }] }],
+  thinkingMode: true,
+  effort: "xhigh", // low | medium | high | xhigh | max
+  maxTokens: 4096,
+  // Do NOT set temperature/topP here — Opus 4.8 will throw if either is set.
+};
+```
+
+`Chat`/`sendChat` also accept these as optional fields (new — previously only `generateResponse` exposed them), so existing `Chat` objects that omit them are unaffected:
+
+```typescript
+let currentChat: Chat = {
+  model: "claude-opus-4-8",
+  responseHistory: [],
+  prompt: "Solve this.",
+  maxTokens: 4096,
+  visionUrl: null,
+  budgetTokens: null,
+  effort: "high", // optional — new
+  outputFormat: undefined, // optional — new, structured output via output_config.format
+};
+```
+
 ## Development
 
 - **Build:** `npm run build` (Compiles TS to `dist/`)
