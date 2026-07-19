@@ -154,6 +154,288 @@ describe("OpenAIAdapter", () => {
 
   // ... (all existing test cases remain unchanged) ...
 
+  describe("GPT-5.x / reasoning model support", () => {
+    const gpt56Model: ModelConfig = {
+      apiName: "gpt-5.6-sol",
+      isVision: false,
+      isImageGeneration: false,
+      isThinking: true,
+    };
+    const gpt5Model: ModelConfig = {
+      apiName: "gpt-5",
+      isVision: false,
+      isImageGeneration: false,
+      isThinking: true,
+    };
+    const o3Model: ModelConfig = {
+      apiName: "o3",
+      isVision: false,
+      isImageGeneration: false,
+      isThinking: true,
+    };
+    const gpt4oModel: ModelConfig = {
+      apiName: "gpt-4o",
+      isVision: true,
+      isImageGeneration: false,
+      isThinking: false,
+    };
+
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Hi" }] },
+    ];
+
+    const mockBasicResponse = {
+      id: "resp-basic",
+      output_text: "Hello there.",
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Hello there." }],
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      mockResponsesCreate.mockResolvedValue(mockBasicResponse);
+    });
+
+    it("sends explicit effort 'xhigh' on gpt-5.6 models", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a = new OpenAIAdapter(mockConfig, gpt56Model);
+      await a.generateResponse({
+        model: gpt56Model.apiName,
+        messages: basicMessages,
+        effort: "xhigh",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning).toEqual({
+        effort: "xhigh",
+        summary: "auto",
+      });
+    });
+
+    it("maps budgetTokens to effort levels (0->low, 4000->medium, 10000->high)", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a = new OpenAIAdapter(mockConfig, gpt5Model);
+
+      await a.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        budgetTokens: 0,
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning.effort).toBe(
+        "low"
+      );
+
+      mockResponsesCreate.mockClear();
+      await a.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        budgetTokens: 4000,
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning.effort).toBe(
+        "medium"
+      );
+
+      mockResponsesCreate.mockClear();
+      await a.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        budgetTokens: 10000,
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning.effort).toBe(
+        "high"
+      );
+    });
+
+    it("prefers explicit effort over a budgetTokens-derived value", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a = new OpenAIAdapter(mockConfig, gpt5Model);
+      await a.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        budgetTokens: 10000, // would map to "high"
+        effort: "low",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning.effort).toBe(
+        "low"
+      );
+    });
+
+    it("applies reasoning.mode 'pro' on gpt-5.6 but ignores it (with a warning) on gpt-5", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a56 = new OpenAIAdapter(mockConfig, gpt56Model);
+      await a56.generateResponse({
+        model: gpt56Model.apiName,
+        messages: basicMessages,
+        effort: "high",
+        reasoningMode: "pro",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning.mode).toBe("pro");
+
+      mockResponsesCreate.mockClear();
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const a5 = new OpenAIAdapter(mockConfig, gpt5Model);
+      await a5.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        effort: "high",
+        reasoningMode: "pro",
+      });
+      expect(
+        mockResponsesCreate.mock.calls[0][0].reasoning.mode
+      ).toBeUndefined();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it("forwards verbosity as text.verbosity on gpt-5.x but omits it (with a warning) on gpt-4o/o3", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a5 = new OpenAIAdapter(mockConfig, gpt5Model);
+      await a5.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        verbosity: "low",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].text).toEqual({
+        verbosity: "low",
+      });
+
+      mockResponsesCreate.mockClear();
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const a4o = new OpenAIAdapter(mockConfig, gpt4oModel);
+      await a4o.generateResponse({
+        model: gpt4oModel.apiName,
+        messages: basicMessages,
+        verbosity: "low",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].text).toBeUndefined();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it("forwards outputFormat as text.format", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a = new OpenAIAdapter(mockConfig, gpt5Model);
+      const schema = { type: "json_schema", name: "person", schema: {} };
+      await a.generateResponse({
+        model: gpt5Model.apiName,
+        messages: basicMessages,
+        outputFormat: schema,
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].text).toEqual({
+        format: schema,
+      });
+    });
+
+    it("forwards temperature/top_p on non-reasoning models but omits them (with a warning) on reasoning models", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a4o = new OpenAIAdapter(mockConfig, gpt4oModel);
+      await a4o.generateResponse({
+        model: gpt4oModel.apiName,
+        messages: basicMessages,
+        temperature: 0.7,
+        topP: 0.9,
+      });
+      const callArgs = mockResponsesCreate.mock.calls[0][0];
+      expect(callArgs.temperature).toBe(0.7);
+      expect(callArgs.top_p).toBe(0.9);
+
+      mockResponsesCreate.mockClear();
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const a56 = new OpenAIAdapter(mockConfig, gpt56Model);
+      await a56.generateResponse({
+        model: gpt56Model.apiName,
+        messages: basicMessages,
+        temperature: 0.7,
+      });
+      const callArgs2 = mockResponsesCreate.mock.calls[0][0];
+      expect(callArgs2.temperature).toBeUndefined();
+      expect(callArgs2.top_p).toBeUndefined();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it("does not add a reasoning param (and warns) when budgetTokens is set on a non-reasoning model", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const consoleWarnSpy = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => {});
+      const a4o = new OpenAIAdapter(mockConfig, gpt4oModel);
+      await a4o.generateResponse({
+        model: gpt4oModel.apiName,
+        messages: basicMessages,
+        budgetTokens: 5000,
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning).toBeUndefined();
+      consoleWarnSpy.mockRestore();
+    });
+
+    it("treats o-series models (e.g. o3) as reasoningLegacy: effort is forwarded", async () => {
+      const { mockResponsesCreate } = getMockOpenAIClient();
+      const a = new OpenAIAdapter(mockConfig, o3Model);
+      await a.generateResponse({
+        model: o3Model.apiName,
+        messages: basicMessages,
+        effort: "high",
+      });
+      expect(mockResponsesCreate.mock.calls[0][0].reasoning).toEqual({
+        effort: "high",
+        summary: "auto",
+      });
+    });
+  });
+
+  describe("sendChat field forwarding", () => {
+    it("forwards effort, temperature, topP, outputFormat, verbosity, reasoningMode, budgetTokens, and previousResponseId to generateResponse", async () => {
+      const a = new OpenAIAdapter(mockConfig, mockVisionModel);
+      const genSpy = jest
+        .spyOn(a, "generateResponse")
+        .mockResolvedValue({
+          role: "assistant",
+          content: [{ type: "text", text: "hi" }],
+        } as AIResponse);
+
+      const chat: Chat = {
+        responseHistory: [],
+        visionUrl: null,
+        model: mockVisionModel.apiName,
+        prompt: "Hello",
+        imageURL: null,
+        maxTokens: 100,
+        budgetTokens: 10000,
+        systemPrompt: "Be nice",
+        previousResponseId: "resp-abc",
+        effort: "xhigh",
+        temperature: 0.5,
+        topP: 0.8,
+        outputFormat: { type: "json_schema" },
+        verbosity: "high",
+        reasoningMode: "pro",
+      };
+
+      await a.sendChat(chat);
+
+      expect(genSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: mockVisionModel.apiName,
+          previousResponseId: "resp-abc",
+          budgetTokens: 10000,
+          effort: "xhigh",
+          temperature: 0.5,
+          topP: 0.8,
+          outputFormat: { type: "json_schema" },
+          verbosity: "high",
+          reasoningMode: "pro",
+        })
+      );
+    });
+  });
+
   describe("streamResponse", () => {
     const basicMessages: Message[] = [
       { role: "user", content: [{ type: "text", text: "Tell me a story" }] },

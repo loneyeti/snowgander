@@ -119,11 +119,13 @@ export interface Chat {
   // Options specific to OpenAI Image Adapter, passed via Chat
   openaiImageGenerationOptions?: OpenAIImageGenerationOptions;
   openaiImageEditOptions?: OpenAIImageEditOptions;
-  // Claude 4.6+ specific options (optional — omit to preserve prior behavior)
-  effort?: "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking
+  // Claude 4.6+ / GPT-5+ specific options (optional — omit to preserve prior behavior)
+  effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking / reasoning
   temperature?: number; // Sampling temperature (rejected outright on some newer models)
   topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
-  outputFormat?: any; // Structured output format for output_config
+  outputFormat?: any; // Structured output format for output_config / text.format
+  verbosity?: "low" | "medium" | "high"; // GPT-5+: controls text.verbosity
+  reasoningMode?: "standard" | "pro"; // GPT-5.6+: controls reasoning.mode
 }
 
 // Represents an MCP Tool configuration
@@ -191,10 +193,12 @@ export interface AIRequestOptions {
   openaiImageEditOptions?: OpenAIImageEditOptions;
   // New: Specific flag to control image generation per request
   useImageGeneration?: boolean;
-  // Claude 4.6+ specific options
-  effort?: "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking (Claude 4.6+)
-  outputFormat?: any; // Structured output format for output_config (Claude 4.6+)
+  // Claude 4.6+ / GPT-5+ specific options
+  effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking / reasoning (Claude 4.6+, GPT-5+)
+  outputFormat?: any; // Structured output format for output_config / text.format (Claude 4.6+, GPT-5+)
   topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
+  verbosity?: "low" | "medium" | "high"; // GPT-5+: controls text.verbosity
+  reasoningMode?: "standard" | "pro"; // GPT-5.6+: controls reasoning.mode
 }
 
 // --- OpenAI Image API Specific Options ---

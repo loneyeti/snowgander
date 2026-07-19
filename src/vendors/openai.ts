@@ -82,33 +82,152 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
   }
 
-  private getReasoningParam(budgetTokens: number | null | undefined):
-    | {
-        reasoning: {
-          effort: "low" | "medium" | "high";
-          summary: "auto" | "concise" | "detailed";
-        };
-      }
-    | undefined {
-    // If budgetTokens is not provided, do not add the reasoning parameter.
-    if (typeof budgetTokens !== "number" || budgetTokens < 0) {
+  // --- Model tier classification ---
+  //
+  // OpenAI's reasoning support and sampling-parameter constraints don't move in lockstep
+  // across model families, so (mirroring the Anthropic adapter) we classify each request's
+  // model into two *independent* axes rather than a single generation string.
+  //
+  // getReasoningTier(model) -> controls which `reasoning.effort` values are valid, whether
+  // `reasoning.mode: "pro"` and `text.verbosity` are available.
+  // getSamplingPolicy(model) -> controls whether `temperature`/`top_p` may be sent at all.
+  //
+  // | Reasoning tier    | Models                              | Effort levels                          | verbosity | pro mode |
+  // |-------------------|--------------------------------------|-----------------------------------------|-----------|----------|
+  // | gpt5_6            | gpt-5.6, gpt-5.6-sol/terra/luna       | none/minimal/low/medium/high/xhigh/max  | yes       | yes      |
+  // | gpt5              | gpt-5, gpt-5.4, gpt-5.5 (incl. mini/nano) | none/minimal/low/medium/high        | yes       | no       |
+  // | reasoningLegacy   | o1, o3, o4 (incl. -mini variants)     | low/medium/high                        | no        | no       |
+  // | nonReasoning (default/fallback) | gpt-4o, gpt-4.1, gpt-4-turbo, gpt-4, gpt-3.5, any unrecognized/future model | n/a (no reasoning param) | no | no |
+  //
+  // | Sampling policy | Reasoning tier(s)            | Behavior                                   |
+  // |------------------|------------------------------|---------------------------------------------|
+  // | both             | nonReasoning                  | temperature and top_p may both be sent      |
+  // | none             | gpt5_6 / gpt5 / reasoningLegacy | temperature/top_p rejected by the API; we omit them and warn |
+  private getReasoningTier(
+    modelName: string
+  ): "gpt5_6" | "gpt5" | "reasoningLegacy" | "nonReasoning" {
+    if (modelName.includes("gpt-5.6")) {
+      return "gpt5_6";
+    }
+
+    if (modelName.includes("gpt-5")) {
+      return "gpt5";
+    }
+
+    if (/(^|[^a-zA-Z0-9])o[134](-mini)?([^a-zA-Z0-9]|$)/.test(modelName)) {
+      return "reasoningLegacy";
+    }
+
+    // gpt-4o, gpt-4.1, gpt-4-turbo, gpt-4, gpt-3.5, and any unrecognized/future model.
+    return "nonReasoning";
+  }
+
+  private getSamplingPolicy(modelName: string): "both" | "none" {
+    return this.getReasoningTier(modelName) === "nonReasoning"
+      ? "both"
+      : "none";
+  }
+
+  // Backwards-compat bridge: derive an effort level from the legacy `budgetTokens` field
+  // when no explicit `effort` is supplied. Only reaches low/medium/high — xhigh/max/none/
+  // minimal require an explicit `effort` value.
+  private mapBudgetToEffort(
+    budgetTokens?: number | null
+  ): "low" | "medium" | "high" {
+    if (!budgetTokens || budgetTokens <= 0) return "low";
+    if (budgetTokens < 8192) return "medium";
+    return "high";
+  }
+
+  private buildReasoningParam(
+    options: AIRequestOptions,
+    modelName: string
+  ): { reasoning: Record<string, any> } | undefined {
+    const { effort, budgetTokens } = options;
+
+    const reasoningRequested =
+      effort !== undefined ||
+      (typeof budgetTokens === "number" && budgetTokens >= 0);
+
+    if (!reasoningRequested) {
       return undefined;
     }
 
-    let effort: "low" | "medium" | "high";
+    const tier = this.getReasoningTier(modelName);
 
-    if (budgetTokens === 0) {
-      effort = "low";
-    } else if (budgetTokens > 0 && budgetTokens < 8192) {
-      effort = "medium";
-    } else {
-      // budgetTokens >= 8192
-      effort = "high";
+    if (tier === "nonReasoning") {
+      console.warn(
+        `Reasoning effort/budgetTokens requested for non-reasoning model '${modelName}'. Ignoring.`
+      );
+      return undefined;
     }
 
-    return {
-      reasoning: { effort: effort, summary: "auto" },
+    const reasoning: Record<string, any> = {
+      effort: effort || this.mapBudgetToEffort(budgetTokens),
+      summary: "auto",
     };
+
+    if (options.reasoningMode === "pro") {
+      if (tier === "gpt5_6") {
+        reasoning.mode = "pro";
+      } else {
+        console.warn(
+          `reasoningMode "pro" is only supported on GPT-5.6 models; ignoring for '${modelName}'.`
+        );
+      }
+    }
+
+    return { reasoning };
+  }
+
+  private buildSamplingParams(
+    options: AIRequestOptions,
+    modelName: string
+  ): { temperature?: number; top_p?: number } {
+    const { temperature, topP } = options;
+
+    if (temperature === undefined && topP === undefined) {
+      return {};
+    }
+
+    const policy = this.getSamplingPolicy(modelName);
+
+    if (policy === "none") {
+      console.warn(
+        `Model '${modelName}' does not support sampling parameters (temperature/top_p) while reasoning is active. Ignoring.`
+      );
+      return {};
+    }
+
+    const params: { temperature?: number; top_p?: number } = {};
+    if (temperature !== undefined) params.temperature = temperature;
+    if (topP !== undefined) params.top_p = topP;
+    return params;
+  }
+
+  private buildTextParam(
+    options: AIRequestOptions,
+    modelName: string
+  ): { text: Record<string, any> } | undefined {
+    const { outputFormat, verbosity } = options;
+    const text: Record<string, any> = {};
+
+    if (outputFormat) {
+      text.format = outputFormat;
+    }
+
+    if (verbosity) {
+      const tier = this.getReasoningTier(modelName);
+      if (tier === "gpt5_6" || tier === "gpt5") {
+        text.verbosity = verbosity;
+      } else {
+        console.warn(
+          `verbosity is only supported on GPT-5+ models; ignoring for '${modelName}'.`
+        );
+      }
+    }
+
+    return Object.keys(text).length > 0 ? { text } : undefined;
   }
 
   async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
@@ -255,8 +374,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
       );
     }
 
-    // Get the reasoning parameter using our new helper method
-    const reasoningParam = this.getReasoningParam(options.budgetTokens);
+    // Get the reasoning/sampling/text parameters via our tier-aware helper methods
+    const reasoningParam = this.buildReasoningParam(options, model);
+    const samplingParams = this.buildSamplingParams(options, model);
+    const textParam = this.buildTextParam(options, model);
 
     // New code to be inserted starts here
     let finalTools = tools ? [...tools] : [];
@@ -301,8 +422,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
       input: finalApiPayload as any,
       tools: finalTools, // <-- This line is changed
       store: store,
-      // Use spread syntax to add the reasoning parameter if it exists.
+      // Spread the reasoning/sampling/text fragments if they exist.
       ...(reasoningParam as any),
+      ...(samplingParams as any),
+      ...(textParam as any),
     });
 
     // Check for tool usage in the response
@@ -511,8 +634,15 @@ export class OpenAIAdapter implements AIVendorAdapter {
       model: chat.model,
       messages: historyMessages,
       maxTokens: chat.maxTokens || undefined,
-      temperature: undefined,
       systemPrompt: chat.systemPrompt,
+      previousResponseId: chat.previousResponseId,
+      budgetTokens: chat.budgetTokens ?? undefined,
+      effort: chat.effort,
+      temperature: chat.temperature,
+      topP: chat.topP,
+      outputFormat: chat.outputFormat,
+      verbosity: chat.verbosity,
+      reasoningMode: chat.reasoningMode,
     });
 
     return {
@@ -610,7 +740,9 @@ export class OpenAIAdapter implements AIVendorAdapter {
       finalTools.push(imageGenerationTool);
     }
 
-    const reasoningParam = this.getReasoningParam(options.budgetTokens);
+    const reasoningParam = this.buildReasoningParam(options, model);
+    const samplingParams = this.buildSamplingParams(options, model);
+    const textParam = this.buildTextParam(options, model);
 
     console.log(
       `SNOWGANDER: sending this request: ${JSON.stringify({
@@ -622,6 +754,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
         store: store,
         stream: true,
         ...(reasoningParam as any),
+        ...(samplingParams as any),
+        ...(textParam as any),
       })}`
     );
 
@@ -636,6 +770,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
         store: store,
         stream: true,
         ...(reasoningParam as any),
+        ...(samplingParams as any),
+        ...(textParam as any),
       })) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
