@@ -1344,7 +1344,7 @@ describe("AnthropicAdapter", () => {
 
         expect(mockMessagesCreate).toHaveBeenCalledWith(
           expect.objectContaining({
-            thinking: { type: "adaptive" },
+            thinking: { type: "adaptive", display: "summarized" },
             output_config: { effort: "xhigh" },
           })
         );
@@ -1406,7 +1406,7 @@ describe("AnthropicAdapter", () => {
       });
 
       const call = mockMessagesCreate.mock.calls[0][0];
-      expect(call.thinking).toEqual({ type: "adaptive" });
+      expect(call.thinking).toEqual({ type: "adaptive", display: "summarized" });
       expect(call.output_config).toEqual({ effort: "high" });
       expect(call.thinking.budget_tokens).toBeUndefined();
     });
@@ -1617,7 +1617,7 @@ describe("AnthropicAdapter", () => {
 
       expect(mockMessagesCreate).toHaveBeenCalledWith(
         expect.objectContaining({
-          thinking: { type: "adaptive" },
+          thinking: { type: "adaptive", display: "summarized" },
           output_config: { effort: "high" },
         })
       );
@@ -1801,10 +1801,297 @@ describe("AnthropicAdapter", () => {
       });
       expect(mockMessagesCreate.mock.calls[0][0].thinking).toEqual({
         type: "adaptive",
+        display: "summarized",
       });
       await expect(
         a.generateResponse({ model, messages: basicMessages, temperature: 0.5 })
       ).rejects.toThrow(/does not support sampling parameters/);
+    });
+  });
+
+  describe("Opus 5.5 migration requirements", () => {
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Hi" }] },
+    ];
+    const modelConfig = (apiName: string): ModelConfig => ({
+      apiName,
+      isVision: false,
+      isImageGeneration: false,
+      isThinking: true,
+    });
+    const okResponse = (
+      model: string,
+      extra: Record<string, any> = {},
+      content: any[] = [{ type: "text", text: "ok" }]
+    ) => ({
+      id: "msg_55",
+      type: "message",
+      role: "assistant",
+      content,
+      model,
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      ...extra,
+    });
+    const lastCall = () =>
+      mockMessagesCreate.mock.calls[mockMessagesCreate.mock.calls.length - 1][0];
+
+    describe("thinking.display", () => {
+      it.each(["claude-opus-5-5", "claude-sonnet-5", "claude-fable-5"])(
+        "sends summarized display for %s even without thinkingMode (model always thinks)",
+        async (model) => {
+          const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+          mockMessagesCreate.mockResolvedValue(okResponse(model));
+          await a.generateResponse({ model, messages: basicMessages });
+          expect(lastCall().thinking).toEqual({
+            type: "adaptive",
+            display: "summarized",
+          });
+        }
+      );
+
+      it("does not turn thinking on for Opus 4.7/4.8 when thinkingMode is off", async () => {
+        const model = "claude-opus-4-8";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({ model, messages: basicMessages });
+        expect(lastCall().thinking).toBeUndefined();
+      });
+
+      it("honors an explicit thinkingDisplay override", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({
+          model,
+          messages: basicMessages,
+          thinkingMode: true,
+          thinkingDisplay: "omitted",
+        });
+        expect(lastCall().thinking).toEqual({
+          type: "adaptive",
+          display: "omitted",
+        });
+      });
+
+      it("leaves the 4.6 family's default display alone unless asked", async () => {
+        const model = "claude-opus-4-6";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({ model, messages: basicMessages, thinkingMode: true });
+        expect(lastCall().thinking).toEqual({ type: "adaptive" });
+        await a.generateResponse({
+          model,
+          messages: basicMessages,
+          thinkingMode: true,
+          thinkingDisplay: "omitted",
+        });
+        expect(lastCall().thinking).toEqual({ type: "adaptive", display: "omitted" });
+      });
+
+      it("never sends display to legacy-tier models", async () => {
+        const model = "claude-sonnet-4-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({
+          model,
+          messages: basicMessages,
+          thinkingMode: true,
+          budgetTokens: 4000,
+        });
+        expect(lastCall().thinking).toEqual({ type: "enabled", budget_tokens: 4000 });
+      });
+
+      it("forwards thinkingDisplay from sendChat", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.sendChat({
+          responseHistory: [],
+          visionUrl: null,
+          model,
+          prompt: "Hi",
+          imageURL: null,
+          maxTokens: null,
+          budgetTokens: null,
+          thinkingDisplay: "omitted",
+        });
+        expect(lastCall().thinking).toEqual({ type: "adaptive", display: "omitted" });
+      });
+    });
+
+    describe("effort", () => {
+      it("sends effort on adaptive tiers even when thinkingMode is off", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({ model, messages: basicMessages, effort: "low" });
+        expect(lastCall().output_config).toEqual({ effort: "low" });
+      });
+
+      it.each([
+        ["claude-opus-5-5", "minimal", "low"],
+        ["claude-opus-5-5", "none", "low"],
+        ["claude-opus-5-5", "xhigh", "xhigh"],
+        ["claude-opus-4-6", "minimal", "low"],
+        ["claude-opus-4-6", "xhigh", "high"],
+        ["claude-opus-4-6", "max", "max"],
+      ] as const)("maps effort for %s: %s -> %s", async (model, input, expected) => {
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({
+          model,
+          messages: basicMessages,
+          thinkingMode: true,
+          effort: input,
+        });
+        expect(lastCall().output_config).toEqual({ effort: expected });
+      });
+
+      it("treats effort 'none' as thinking off on the 4.6 family", async () => {
+        const model = "claude-opus-4-6";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({
+          model,
+          messages: basicMessages,
+          thinkingMode: true,
+          effort: "none",
+        });
+        expect(lastCall().thinking).toBeUndefined();
+        expect(lastCall().output_config).toBeUndefined();
+      });
+    });
+
+    describe("stop reasons while streaming", () => {
+      async function* streamWithStop(
+        stop_reason: string,
+        stop_details: any = null
+      ) {
+        yield {
+          type: "message_start",
+          message: { id: "msg_stream_55", usage: { input_tokens: 10 } },
+        };
+        yield {
+          type: "message_delta",
+          delta: { stop_reason, stop_details },
+          usage: { output_tokens: 0 },
+        };
+        yield { type: "message_stop" };
+      }
+
+      it("yields a refusal ErrorBlock with the stop_details category", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(
+          streamWithStop("refusal", {
+            type: "refusal",
+            category: "reasoning_extraction",
+            explanation: null,
+          })
+        );
+        const chunks: ContentBlock[] = [];
+        for await (const c of a.streamResponse({ model, messages: basicMessages })) {
+          chunks.push(c);
+        }
+        expect(chunks.map((c) => c.type)).toEqual(["error", "meta"]);
+        expect((chunks[0] as any).privateMessage).toBe(
+          "Stop reason: refusal, category: reasoning_extraction"
+        );
+      });
+
+      it("yields an ErrorBlock for model_context_window_exceeded", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(
+          streamWithStop("model_context_window_exceeded")
+        );
+        const chunks: ContentBlock[] = [];
+        for await (const c of a.streamResponse({ model, messages: basicMessages })) {
+          chunks.push(c);
+        }
+        expect(chunks[0]).toEqual({
+          type: "error",
+          publicMessage: "Response stopped due to context limit.",
+          privateMessage: "Stop reason: model_context_window_exceeded",
+        });
+      });
+    });
+
+    describe("redacted_thinking", () => {
+      it("maps redacted_thinking from responses and echoes it back in requests", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(
+          okResponse(model, {}, [
+            { type: "redacted_thinking", data: "opaque" },
+            { type: "text", text: "ok" },
+          ])
+        );
+        const res = await a.generateResponse({ model, messages: basicMessages });
+        expect(res.content[0]).toEqual({ type: "redacted_thinking", data: "opaque" });
+
+        await a.generateResponse({
+          model,
+          messages: [
+            ...basicMessages,
+            { role: "assistant", content: res.content },
+            { role: "user", content: [{ type: "text", text: "More" }] },
+          ],
+        });
+        expect(lastCall().messages[1].content[0]).toEqual({
+          type: "redacted_thinking",
+          data: "opaque",
+        });
+      });
+
+      it("yields redacted_thinking blocks while streaming", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        async function* stream() {
+          yield {
+            type: "message_start",
+            message: { id: "msg_rt", usage: { input_tokens: 1 } },
+          };
+          yield {
+            type: "content_block_start",
+            index: 0,
+            content_block: { type: "redacted_thinking", data: "opaque" },
+          };
+          yield { type: "content_block_stop", index: 0 };
+          yield { type: "message_stop" };
+        }
+        mockMessagesCreate.mockResolvedValue(stream());
+        const chunks: ContentBlock[] = [];
+        for await (const c of a.streamResponse({ model, messages: basicMessages })) {
+          chunks.push(c);
+        }
+        expect(chunks[0]).toEqual({ type: "redacted_thinking", data: "opaque" });
+      });
+    });
+
+    describe("prefill", () => {
+      const prefilled: Message[] = [
+        ...basicMessages,
+        { role: "assistant", content: [{ type: "text", text: "{" }] },
+      ];
+
+      it("throws before calling the API for adaptive-tier models", async () => {
+        const model = "claude-opus-5-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        await expect(
+          a.generateResponse({ model, messages: prefilled })
+        ).rejects.toThrow(/does not support assistant message prefill/);
+        expect(mockMessagesCreate).not.toHaveBeenCalled();
+      });
+
+      it("still allows prefill on legacy-tier models", async () => {
+        const model = "claude-sonnet-4-5";
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({ model, messages: prefilled });
+        expect(mockMessagesCreate).toHaveBeenCalled();
+      });
     });
   });
 });

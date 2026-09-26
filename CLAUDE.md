@@ -137,9 +137,23 @@ and its sampling-parameter constraints don't change in lockstep across releases:
 | `none` | `adaptiveOnly` tier (Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Mythos 5) | Throws if *either* `temperature` or `topP` is set at all |
 
 Other tier-driven behavior:
-- `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) is honored on both adaptive tiers; when
-  omitted, `budgetTokens` is mapped via a simple heuristic (`mapBudgetToEffort`) that only reaches
-  low/medium/high — `xhigh`/`max` require an explicit `effort` value.
+- `effort` is honored on both adaptive tiers and is sent whenever provided, even with
+  `thinkingMode` off (on the Claude 5 family it's the only thinking control; the API default is
+  `medium` on Opus 5.5, `high` on earlier models). `normalizeEffort` maps the OpenAI-only values:
+  `minimal`→`low`; `none`→`low` on `adaptiveOnly` (thinking can't be disabled) or thinking omitted
+  on `adaptiveTransitional`; `xhigh`→`high` on `adaptiveTransitional` (no xhigh there). When
+  `effort` is omitted and thinking is requested, `budgetTokens` is mapped via `mapBudgetToEffort`
+  (low/medium/high only).
+- `thinking.display`: `adaptiveOnly` models default to `"omitted"` (empty thinking text, and on
+  Opus 5.5 the progress notes between tool calls arrive as thinking blocks), so the adapter sends
+  `display: "summarized"` unless `thinkingDisplay` overrides it. Models that think by default
+  (`thinksByDefault`: the Claude 5 family, not Opus 4.7/4.8) get `thinking: {type: "adaptive",
+  display}` even when `thinkingMode` is off; Opus 4.7/4.8 only get it when thinking is requested.
+  The 4.6 family defaults to summarized, so display is sent there only when `thinkingDisplay` is set.
+- `redacted_thinking` blocks are mapped through responses, streams, and request history, since
+  thinking blocks must be echoed back unmodified in tool loops.
+- Adaptive-tier models reject assistant prefill; `assertNoPrefill` throws before the API call when
+  the last message is an assistant turn.
 - `outputFormat` (structured outputs via `output_config.format`) is supported on both adaptive
   tiers, not just `adaptiveOnly`.
 - Default `max_tokens` (when the caller doesn't set `maxTokens`, e.g. Snowgoose): `max_tokens` caps
@@ -148,12 +162,11 @@ Other tier-driven behavior:
   8192 for Opus 4.0/4.1). Both are clamped to the model's max output (`getMaxOutputTokens`: 4096 for
   Claude 3 Opus/Sonnet/Haiku, 8192 for 3.5, 32000 for Opus 4.0/4.1, 64000 otherwise). Legacy-tier
   `budget_tokens` is clamped so at least 1024 tokens remain for the answer.
-- Stop reason `max_tokens` produces an `ErrorBlock` (appended in `generateResponse`, yielded before
-  the meta block in `streamResponse`) so truncation is never silent.
-- Stop reason `refusal` includes `stop_details.category` (e.g. `"cyber"`, `"bio"`) in the
-  `ErrorBlock.privateMessage` when the SDK response provides it. `model_context_window_exceeded`
-  is also handled.
-- `sendChat()` forwards `effort`, `temperature`, `topP`, and `outputFormat` from `Chat` to
+- Stop reasons `refusal`, `max_tokens`, and `model_context_window_exceeded` each produce an
+  `ErrorBlock` via `buildStopReasonError` (appended in `generateResponse`, yielded before the meta
+  block in `streamResponse`) so they're never silent. Refusals include `stop_details.category`
+  (e.g. `"cyber"`, `"bio"`, `"reasoning_extraction"`) in `ErrorBlock.privateMessage`.
+- `sendChat()` forwards `effort`, `temperature`, `topP`, `outputFormat`, and `thinkingDisplay` from `Chat` to
   `generateResponse()` (all optional fields on `Chat` — omitting them preserves prior behavior for
   existing callers). `thinkingMode` is derived as `(chat.budgetTokens ?? 0) > 0 || !!chat.effort`.
 

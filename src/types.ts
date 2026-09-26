@@ -124,6 +124,7 @@ export interface Chat {
   temperature?: number; // Sampling temperature (rejected outright on some newer models)
   topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
   outputFormat?: any; // Structured output format for output_config / text.format
+  thinkingDisplay?: "summarized" | "omitted"; // Claude 4.7+: thinking.display (adapter defaults to "summarized" where the API default is "omitted")
   verbosity?: "low" | "medium" | "high"; // GPT-5+: controls text.verbosity
   reasoningMode?: "standard" | "pro"; // GPT-5.6+: controls reasoning.mode
 }
@@ -197,6 +198,7 @@ export interface AIRequestOptions {
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"; // Effort level for adaptive thinking / reasoning (Claude 4.6+, GPT-5+)
   outputFormat?: any; // Structured output format for output_config / text.format (Claude 4.6+, GPT-5+)
   topP?: number; // Top-p sampling (alternative to temperature, only for legacy-tier models)
+  thinkingDisplay?: "summarized" | "omitted"; // Claude 4.7+: thinking.display (adapter defaults to "summarized" where the API default is "omitted")
   verbosity?: "low" | "medium" | "high"; // GPT-5+: controls text.verbosity
   reasoningMode?: "standard" | "pro"; // GPT-5.6+: controls reasoning.mode
 }

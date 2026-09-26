@@ -53,6 +53,10 @@ type FormattedAnthropicContentBlock =
       signature: string;
     }
   | {
+      type: "redacted_thinking";
+      data: string;
+    }
+  | {
       type: "tool_result";
       tool_use_id: string;
       content: string | Array<{ type: "text"; text: string }>;
@@ -258,21 +262,55 @@ export class AnthropicAdapter implements AIVendorAdapter {
   }
 
   /**
-   * Builds the `thinking` / `output_config` request fragment for a given tier.
+   * Whether the model runs adaptive thinking even when the request has no
+   * `thinking` field. Opus 4.7/4.8 are adaptive-only but think only when asked;
+   * the Claude 5 family thinks by default (Opus 5.5 can't disable it at all).
+   */
+  private thinksByDefault(modelName: string): boolean {
+    return (
+      this.getThinkingTier(modelName) === "adaptiveOnly" &&
+      !modelName.includes("claude-opus-4-7") &&
+      !modelName.includes("claude-opus-4-8")
+    );
+  }
+
+  /**
+   * Normalize the shared `effort` option (which also carries OpenAI-only
+   * values) to a level Anthropic accepts for this tier. Returns undefined when
+   * no effort should be sent. "none" means "don't think": on the 4.6 tier that's
+   * expressed by omitting thinking, but Claude 5-family models always think, so
+   * the closest valid request is "low".
+   */
+  private normalizeEffort(
+    tier: ThinkingTier,
+    effort: AIRequestOptions["effort"]
+  ): "low" | "medium" | "high" | "xhigh" | "max" | undefined {
+    if (!effort) return undefined;
+    if (effort === "minimal") return "low";
+    if (effort === "none") return tier === "adaptiveOnly" ? "low" : undefined;
+    // The 4.6 family has no xhigh level.
+    if (effort === "xhigh" && tier === "adaptiveTransitional") return "high";
+    return effort;
+  }
+
+  /**
+   * Builds the `thinking` / `output_config` request fragment for a model.
    * Shared between generateResponse and streamResponse.
    */
   private buildThinkingParams(
-    tier: ThinkingTier,
+    model: string,
     thinkingMode: boolean | undefined,
     budgetTokens: number | undefined,
     maxTokens: number,
     effort: AIRequestOptions["effort"],
-    outputFormat: any
+    outputFormat: any,
+    thinkingDisplay: AIRequestOptions["thinkingDisplay"]
   ): { thinking?: any; output_config?: any } {
+    const tier = this.getThinkingTier(model);
     const result: { thinking?: any; output_config?: any } = {};
 
-    if (thinkingMode && this.isThinkingCapable) {
-      if (tier === "legacyBudget") {
+    if (tier === "legacyBudget") {
+      if (thinkingMode && this.isThinkingCapable) {
         // Use legacy budget_tokens for models without adaptive thinking support.
         // budget_tokens must be < max_tokens; reserve at least 1024 tokens for
         // the answer so thinking can't consume the whole output (1024 is also
@@ -285,16 +323,37 @@ export class AnthropicAdapter implements AIVendorAdapter {
             maxBudget
           ),
         };
-      } else {
-        // Use adaptive thinking for adaptiveTransitional/adaptiveOnly tiers.
-        result.thinking = { type: "adaptive" };
+      }
+    } else {
+      const wantsThinking =
+        !!thinkingMode && this.isThinkingCapable && effort !== "none";
 
-        // Map budgetTokens to effort if provided, or use explicit effort parameter
-        if (budgetTokens !== undefined || effort) {
-          result.output_config = {
-            effort: effort || this.mapBudgetToEffort(budgetTokens),
-          };
-        }
+      // adaptiveOnly models default thinking.display to "omitted" (empty
+      // thinking text); default to "summarized" so reasoning and the progress
+      // notes written between tool calls stay visible. The 4.6 family already
+      // defaults to summarized, so only send display there when asked.
+      const display =
+        thinkingDisplay ?? (tier === "adaptiveOnly" ? "summarized" : undefined);
+
+      // Send thinking when requested, or when the model thinks regardless and
+      // we need to set its display.
+      if (wantsThinking || (this.thinksByDefault(model) && display)) {
+        result.thinking = {
+          type: "adaptive",
+          ...(display && { display }),
+        };
+      }
+
+      // Effort applies whether or not thinking was requested (on the Claude 5
+      // family it's the only thinking control). Without an explicit effort,
+      // derive one from budgetTokens when thinking was requested.
+      const resolvedEffort =
+        this.normalizeEffort(tier, effort) ??
+        (wantsThinking && budgetTokens !== undefined
+          ? this.mapBudgetToEffort(budgetTokens)
+          : undefined);
+      if (resolvedEffort) {
+        result.output_config = { effort: resolvedEffort };
       }
     }
 
@@ -310,17 +369,66 @@ export class AnthropicAdapter implements AIVendorAdapter {
   }
 
   /**
-   * ErrorBlock for stop_reason "max_tokens". Shared between generateResponse
-   * and streamResponse.
+   * ErrorBlock for stop reasons the caller must not miss (refusal, max_tokens,
+   * model_context_window_exceeded), or undefined for normal stops. Shared
+   * between generateResponse and streamResponse.
    */
-  private buildMaxTokensError(maxTokens: number): ContentBlock {
-    console.warn(`Response truncated: hit max_tokens limit (${maxTokens})`);
-    return {
-      type: "error",
-      publicMessage:
-        "Response was truncated because it hit the max token limit.",
-      privateMessage: `Stop reason: max_tokens (max_tokens: ${maxTokens})`,
-    };
+  private buildStopReasonError(
+    stopReason: string | null | undefined,
+    stopDetails: { category?: string | null } | null | undefined,
+    maxTokens: number
+  ): ContentBlock | undefined {
+    if (stopReason === "refusal") {
+      const category = stopDetails?.category;
+      console.warn(
+        `Model refused to respond to this request${
+          category ? ` (category: ${category})` : ""
+        }`
+      );
+      return {
+        type: "error",
+        publicMessage: "The model declined to respond to this request.",
+        privateMessage: `Stop reason: ${stopReason}${
+          category ? `, category: ${category}` : ""
+        }`,
+      };
+    }
+    if (stopReason === "max_tokens") {
+      console.warn(`Response truncated: hit max_tokens limit (${maxTokens})`);
+      return {
+        type: "error",
+        publicMessage:
+          "Response was truncated because it hit the max token limit.",
+        privateMessage: `Stop reason: max_tokens (max_tokens: ${maxTokens})`,
+      };
+    }
+    if (stopReason === "model_context_window_exceeded") {
+      console.warn("Response stopped due to context window limit");
+      return {
+        type: "error",
+        publicMessage: "Response stopped due to context limit.",
+        privateMessage: `Stop reason: ${stopReason}`,
+      };
+    }
+    return undefined;
+  }
+
+  /**
+   * Claude Opus 4.6+ and the Claude 5 family reject a request whose last
+   * message is an assistant turn (prefill). Throw a descriptive error up front
+   * rather than letting it reach the API as an opaque 400.
+   */
+  private assertNoPrefill(model: string, messages: Message[]): void {
+    const last = messages[messages.length - 1];
+    if (
+      last?.role === "assistant" &&
+      this.getThinkingTier(model) !== "legacyBudget"
+    ) {
+      throw new Error(
+        `Model '${model}' does not support assistant message prefill. ` +
+          `End the conversation with a user message; use outputFormat or the system prompt to shape the response.`
+      );
+    }
   }
 
   /**
@@ -356,6 +464,9 @@ export class AnthropicAdapter implements AIVendorAdapter {
               thinking: block.thinking,
               signature: block.signature, // Assuming signature maps directly, adjust if needed
             });
+          } else if (block.type === "redacted_thinking") {
+            // Must be echoed back unmodified alongside thinking blocks in tool loops.
+            acc.push({ type: "redacted_thinking", data: block.data });
           } else if (block.type === "tool_result" && msg.role === "user") {
             // Handle tool_result specifically for user messages
             // Anthropic expects tool_result content to be a string or an array of text blocks.
@@ -469,14 +580,14 @@ export class AnthropicAdapter implements AIVendorAdapter {
       outputFormat,
       temperature,
       topP,
+      thinkingDisplay,
     } = options;
 
     // Validate sampling parameters (throws a descriptive error for
     // incompatible model/parameter combinations rather than an opaque 400)
     const samplingParams = this.buildSamplingParams(model, temperature, topP);
 
-    // Determine model tier for version-aware features
-    const tier = this.getThinkingTier(model);
+    this.assertNoPrefill(model, messages);
 
     // Convert messages to Anthropic format
     const formattedMessages = this.formatMessages(messages, model);
@@ -486,12 +597,13 @@ export class AnthropicAdapter implements AIVendorAdapter {
 
     // Build thinking / output_config request fragment
     const thinkingParams = this.buildThinkingParams(
-      tier,
+      model,
       thinkingMode,
       budgetTokens,
       resolvedMaxTokens,
       effort,
-      outputFormat
+      outputFormat,
+      thinkingDisplay
     );
 
     // Build request parameters based on model tier
@@ -544,6 +656,8 @@ export class AnthropicAdapter implements AIVendorAdapter {
           thinking: block.thinking,
           signature: block.signature,
         });
+      } else if (block.type === "redacted_thinking") {
+        contentBlocks.push({ type: "redacted_thinking", data: block.data });
       } else if (block.type === "text") {
         contentBlocks.push({
           type: "text",
@@ -561,35 +675,14 @@ export class AnthropicAdapter implements AIVendorAdapter {
       // Skip any other unknown block types
     }
 
-    // Handle new stop reasons (Claude 4.5+)
-    const stopReason = response.stop_reason as string;
-    if (stopReason === "refusal") {
-      const category = response.stop_details?.category;
-      console.warn(
-        `Model refused to respond to this request${
-          category ? ` (category: ${category})` : ""
-        }`
-      );
-      contentBlocks.push({
-        type: "error",
-        publicMessage: "The model declined to respond to this request.",
-        privateMessage: `Stop reason: ${stopReason}${
-          category ? `, category: ${category}` : ""
-        }`,
-      });
-    }
-
-    if (stopReason === "max_tokens") {
-      contentBlocks.push(this.buildMaxTokensError(resolvedMaxTokens));
-    }
-
-    if (stopReason === "model_context_window_exceeded") {
-      console.warn("Response stopped due to context window limit");
-      contentBlocks.push({
-        type: "error",
-        publicMessage: "Response stopped due to context limit.",
-        privateMessage: `Stop reason: ${stopReason}`,
-      });
+    // Surface refusals, truncation, and context-window stops
+    const stopError = this.buildStopReasonError(
+      response.stop_reason,
+      response.stop_details,
+      resolvedMaxTokens
+    );
+    if (stopError) {
+      contentBlocks.push(stopError);
     }
 
     // Removed usage calculation and user update logic
@@ -628,14 +721,14 @@ export class AnthropicAdapter implements AIVendorAdapter {
       outputFormat,
       temperature,
       topP,
+      thinkingDisplay,
     } = options;
 
     // Validate sampling parameters (throws a descriptive error for
     // incompatible model/parameter combinations rather than an opaque 400)
     const samplingParams = this.buildSamplingParams(model, temperature, topP);
 
-    // Determine model tier for version-aware features
-    const tier = this.getThinkingTier(model);
+    this.assertNoPrefill(model, messages);
 
     // This message formatting logic is shared with generateResponse.
     const formattedMessages = this.formatMessages(messages, model);
@@ -654,12 +747,13 @@ export class AnthropicAdapter implements AIVendorAdapter {
       };
 
       const thinkingParams = this.buildThinkingParams(
-        tier,
+        model,
         thinkingMode,
         budgetTokens,
         resolvedMaxTokens,
         effort,
-        outputFormat
+        outputFormat,
+        thinkingDisplay
       );
 
       const stream = await this.client.messages.create({
@@ -675,6 +769,8 @@ export class AnthropicAdapter implements AIVendorAdapter {
       let inputTokens = 0;
       let outputTokens = 0;
       let stopReason: string | null | undefined = undefined;
+      let stopDetails: { category?: string | null } | null | undefined =
+        undefined;
 
       for await (const event of stream) {
         switch (event.type) {
@@ -696,6 +792,10 @@ export class AnthropicAdapter implements AIVendorAdapter {
                   thinking: "",
                   signature: "anthropic",
                 });
+                break;
+              case "redacted_thinking":
+                // Arrives complete in content_block_start; no deltas follow.
+                yield { type: "redacted_thinking", data: content_block.data };
                 break;
               case "tool_use":
                 partialBlocks.set(index, {
@@ -765,6 +865,9 @@ export class AnthropicAdapter implements AIVendorAdapter {
             if (event.delta?.stop_reason) {
               stopReason = event.delta.stop_reason;
             }
+            if (event.delta?.stop_details) {
+              stopDetails = event.delta.stop_details;
+            }
             break;
 
           case "message_stop":
@@ -773,9 +876,15 @@ export class AnthropicAdapter implements AIVendorAdapter {
         }
       }
 
-      // Surface truncation so callers don't silently get a partial answer.
-      if (stopReason === "max_tokens") {
-        yield this.buildMaxTokensError(resolvedMaxTokens);
+      // Surface refusals, truncation, and context-window stops so callers
+      // don't silently get a partial or empty answer.
+      const stopError = this.buildStopReasonError(
+        stopReason,
+        stopDetails,
+        resolvedMaxTokens
+      );
+      if (stopError) {
+        yield stopError;
       }
 
       // After the loop, calculate the final usage and yield the meta block.
@@ -938,6 +1047,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       temperature: chat.temperature,
       topP: chat.topP,
       outputFormat: chat.outputFormat,
+      thinkingDisplay: chat.thinkingDisplay,
     });
 
     return {
