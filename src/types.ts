@@ -51,6 +51,10 @@ export interface ImageDataBlock {
   id?: string | null; // The ID of the image generation call, e.g., "ig_123"
   mimeType: string;
   base64Data: string;
+  // Streaming image generation: partial previews share the final image's id.
+  // The last block for an id has isPartial false (or undefined) and is the one to persist.
+  isPartial?: boolean;
+  partialImageIndex?: number;
 }
 
 export interface ToolUseBlock {
@@ -207,12 +211,18 @@ export interface AIRequestOptions {
 // To be nested within AIRequestOptions
 
 export interface OpenAIImageGenerationOptions {
-  n?: number; // Kept for compatibility with images.generate API
-  quality?: "low" | "medium" | "high" | "auto";
-  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto";
+  n?: number; // Kept for compatibility with images.generate API (ignored by the Responses image_generation tool)
+  model?: string; // Image model for the Responses image_generation tool (e.g. "gpt-image-2.5-sunburst")
+  quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto";
+  size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto" | `${number}x${number}`; // Custom sizes: multiples of 16, 1:3-3:1, max 3840px edges
   background?: "transparent" | "opaque" | "auto";
-  // The 'compression' option is for JPEG/WebP which we are not supporting yet.
-  // The 'format' option is for specifying output format which is also out of scope for now.
+  outputFormat?: "png" | "jpeg" | "webp"; // Default png
+  outputCompression?: number; // 0-100, jpeg/webp only
+  moderation?: "auto" | "low";
+  action?: "auto" | "generate" | "edit"; // Responses tool only
+  partialImages?: 0 | 1 | 2 | 3; // Streaming partial previews (adapter default 2)
+  inputFidelity?: "low" | "high";
+  inputImageMask?: { fileId?: string; imageUrl?: string }; // Responses tool only
   user?: string; // Kept for tracking/safety purposes
 }
 

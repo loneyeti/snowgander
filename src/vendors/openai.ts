@@ -15,6 +15,7 @@ import {
   ImageDataBlock, // Correctly import ImageDataBlock
   ImageBlock, // Correctly import ImageBlock
   ImageGenerationCallBlock, // Import the new type
+  OpenAIImageGenerationOptions,
   // Import other ContentBlock types if needed for construction
 } from "../types";
 // Removed duplicate } from "../types";
@@ -230,13 +231,19 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return Object.keys(text).length > 0 ? { text } : undefined;
   }
 
-  async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
-    const { model, messages, systemPrompt, tools, store, previousResponseId } =
-      options;
-    // Flags to track tool usage from the response
-    let didGenerateImage = false;
-    let didUseWebSearch = false;
-
+  /**
+   * Maps internal messages to the Responses API `input` array. If any message
+   * carries an ImageGenerationCallBlock, it is returned separately so the caller
+   * can append the `{type: "image_generation_call", id}` reference for multi-turn
+   * image editing (other image data is skipped in that case).
+   */
+  private mapMessagesToApiInput(
+    messages: Message[],
+    model: string
+  ): {
+    apiInput: OpenAIMessageInput[];
+    imageGenerationCallReference: { type: "image_generation_call"; id: string } | null;
+  } {
     // <<< CHANGE START: Find imageGenerationCallReference first
     let imageGenerationCallReference: {
       type: "image_generation_call";
@@ -259,11 +266,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
     }
     // <<< CHANGE END
 
-    const filteredMessages = messages;
 
     // Map internal Message format to OpenAI's responses.create input format
     // Use our custom types that reflect the expected API structure.
-    const apiInput: OpenAIMessageInput[] = filteredMessages
+    const apiInput: OpenAIMessageInput[] = messages
       .map((msg): OpenAIMessageInput | null => {
         // Map internal roles to OpenAI's expected input roles
         let role: "user" | "assistant" | "developer"; // Roles for input messages
@@ -314,6 +320,13 @@ export class OpenAIAdapter implements AIVendorAdapter {
               console.warn(
                 `Skipping '${block.type}' block because an 'image_generation_call' is present for an edit operation.`
               );
+              return null;
+            } else if (
+              (block.type === "image" || block.type === "image_data") &&
+              role !== "user"
+            ) {
+              // Assistant turns can't carry input_image parts (e.g. a previously
+              // generated image persisted in history); the API would reject them.
               return null;
             } else if (block.type === "image" && this.isVisionCapable) {
               // Map ImageBlock (URL) to input_image part, only for user role
@@ -374,39 +387,75 @@ export class OpenAIAdapter implements AIVendorAdapter {
       );
     }
 
+    return { apiInput, imageGenerationCallReference };
+  }
+
+  /**
+   * Builds the Responses API `image_generation` tool from our options.
+   * "auto" and undefined values are omitted so the API defaults apply.
+   */
+  private buildImageGenerationTool(opts: OpenAIImageGenerationOptions): any {
+    const tool: any = {
+      type: "image_generation",
+      partial_images: opts.partialImages ?? 2,
+    };
+    const set = (key: string, value: unknown) => {
+      if (value !== undefined && value !== null && value !== "auto") {
+        tool[key] = value;
+      }
+    };
+    set("model", opts.model);
+    set("quality", opts.quality);
+    set("size", opts.size);
+    set("background", opts.background);
+    set("output_format", opts.outputFormat);
+    set("output_compression", opts.outputCompression);
+    set("moderation", opts.moderation);
+    set("action", opts.action);
+    set("input_fidelity", opts.inputFidelity);
+    if (opts.inputImageMask?.fileId || opts.inputImageMask?.imageUrl) {
+      tool.input_image_mask = {
+        ...(opts.inputImageMask.fileId && { file_id: opts.inputImageMask.fileId }),
+        ...(opts.inputImageMask.imageUrl && {
+          image_url: opts.inputImageMask.imageUrl,
+        }),
+      };
+    }
+    return tool;
+  }
+
+  private imageMimeType(opts?: OpenAIImageGenerationOptions): string {
+    switch (opts?.outputFormat) {
+      case "jpeg":
+        return "image/jpeg";
+      case "webp":
+        return "image/webp";
+      default:
+        return "image/png";
+    }
+  }
+
+  async generateResponse(options: AIRequestOptions): Promise<AIResponse> {
+    const { model, messages, systemPrompt, tools, store, previousResponseId } =
+      options;
+    // Flags to track tool usage from the response
+    let didGenerateImage = false;
+    let didUseWebSearch = false;
+
+    const { apiInput, imageGenerationCallReference } =
+      this.mapMessagesToApiInput(messages, model);
+
     // Get the reasoning/sampling/text parameters via our tier-aware helper methods
     const reasoningParam = this.buildReasoningParam(options, model);
     const samplingParams = this.buildSamplingParams(options, model);
     const textParam = this.buildTextParam(options, model);
 
-    // New code to be inserted starts here
-    let finalTools = tools ? [...tools] : [];
+    const finalTools = tools ? [...tools] : [];
     if (options.openaiImageGenerationOptions) {
-      const imageGenOptions = options.openaiImageGenerationOptions;
-
-      const imageGenerationTool: any = {
-        type: "image_generation",
-        partial_images: 1,
-      };
-
-      if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
-        imageGenerationTool.quality = imageGenOptions.quality;
-      }
-      if (imageGenOptions.size && imageGenOptions.size !== "auto") {
-        imageGenerationTool.size = imageGenOptions.size;
-      }
-      if (imageGenOptions.background && imageGenOptions.background !== "auto") {
-        imageGenerationTool.background = imageGenOptions.background;
-      }
-
-      // Add the fully constructed tool to our tools array.
-      finalTools.push(imageGenerationTool);
-      //console.log(
-      //  "[SNOWGANDER DIAGNOSTIC] - generateResponse - Sending tools to OpenAI:",
-      //  JSON.stringify(finalTools, null, 2)
-      //);
+      finalTools.push(
+        this.buildImageGenerationTool(options.openaiImageGenerationOptions)
+      );
     }
-    // New code to be inserted ends here
 
     // Build the final payload, including the image_generation_call reference if it exists
     const finalApiPayload = [...apiInput];
@@ -564,7 +613,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
         responseBlock.push({
           type: "image_data",
           id: (imageCall as any).id, // <-- CAPTURE THE ID HERE
-          mimeType: "image/png", // Assuming PNG
+          mimeType: this.imageMimeType(options.openaiImageGenerationOptions),
           base64Data: (imageCall as any).result,
         });
       }
@@ -643,6 +692,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       outputFormat: chat.outputFormat,
       verbosity: chat.verbosity,
       reasoningMode: chat.reasoningMode,
+      openaiImageGenerationOptions: chat.openaiImageGenerationOptions,
     });
 
     return {
@@ -663,121 +713,60 @@ export class OpenAIAdapter implements AIVendorAdapter {
   ): AsyncGenerator<ContentBlock, void, unknown> {
     const { model, messages, systemPrompt, tools, store, previousResponseId } =
       options;
-    let currentImageGenerationId: string | null = null;
     let finalResponseId: string | undefined = undefined;
     let finalUsage: UsageResponse | undefined = undefined;
-    const apiInput: OpenAIMessageInput[] = messages
-      .map((msg): OpenAIMessageInput | null => {
-        let role: "user" | "assistant" | "developer";
-        switch (msg.role) {
-          case "user":
-          case "assistant":
-            role = msg.role;
-            break;
-          case "system":
-            return null;
-          default:
-            role = "user";
-        }
-        if (!Array.isArray(msg.content)) return null;
+    const imageMimeType = this.imageMimeType(options.openaiImageGenerationOptions);
+    // Ids of image_generation_call items whose final image has been yielded
+    const yieldedFinalImageIds = new Set<string>();
 
-        const apiContentParts = msg.content
-          .map((block): OpenAIMessageInput["content"][number] | null => {
-            if (block.type === "text") {
-              return {
-                type: role === "assistant" ? "output_text" : "input_text",
-                text: block.text,
-              };
-            }
-            if (
-              block.type === "image" &&
-              this.isVisionCapable &&
-              role === "user"
-            ) {
-              return { type: "input_image", image_url: block.url };
-            }
-            if (
-              block.type === "image_data" &&
-              this.isVisionCapable &&
-              role === "user"
-            ) {
-              return {
-                type: "input_image",
-                image_url: `data:${block.mimeType};base64,${block.base64Data}`,
-              };
-            }
-            return null;
-          })
-          .filter((part): part is OpenAIMessageContentPart => part !== null);
-
-        if (apiContentParts.length === 0) return null;
-        return { role, content: apiContentParts };
-      })
-      .filter((msg): msg is OpenAIMessageInput => msg !== null);
-
-    if (apiInput.length === 0) {
-      throw new Error(
-        "No valid messages could be mapped for the OpenAI API request."
-      );
+    const { apiInput, imageGenerationCallReference } =
+      this.mapMessagesToApiInput(messages, model);
+    const finalApiPayload: any[] = [...apiInput];
+    if (imageGenerationCallReference) {
+      finalApiPayload.push(imageGenerationCallReference);
     }
 
-    let finalTools = tools ? [...tools] : [];
+    const finalTools = tools ? [...tools] : [];
     if (options.openaiImageGenerationOptions) {
-      const imageGenOptions = options.openaiImageGenerationOptions;
-      const imageGenerationTool: any = {
-        type: "image_generation",
-        partial_images: 1,
-      };
-      if (imageGenOptions.quality && imageGenOptions.quality !== "auto") {
-        imageGenerationTool.quality = imageGenOptions.quality;
-      }
-      if (imageGenOptions.size && imageGenOptions.size !== "auto") {
-        imageGenerationTool.size = imageGenOptions.size;
-      }
-      if (imageGenOptions.background && imageGenOptions.background !== "auto") {
-        imageGenerationTool.background = imageGenOptions.background;
-      }
-      finalTools.push(imageGenerationTool);
+      finalTools.push(
+        this.buildImageGenerationTool(options.openaiImageGenerationOptions)
+      );
     }
 
     const reasoningParam = this.buildReasoningParam(options, model);
     const samplingParams = this.buildSamplingParams(options, model);
     const textParam = this.buildTextParam(options, model);
 
+    const requestBody = {
+      model: model,
+      instructions: systemPrompt,
+      previous_response_id: previousResponseId, // Pass state ID
+      input: finalApiPayload,
+      tools: finalTools,
+      store: store,
+      stream: true,
+      ...(reasoningParam as any),
+      ...(samplingParams as any),
+      ...(textParam as any),
+    };
+
+    // Omit `input` from the log: it can contain large base64 images
     console.log(
       `SNOWGANDER: sending this request: ${JSON.stringify({
-        model: model,
-        instructions: systemPrompt,
-        previous_response_id: previousResponseId, // Pass state ID
-        input: apiInput as any,
-        tools: finalTools,
-        store: store,
-        stream: true,
-        ...(reasoningParam as any),
-        ...(samplingParams as any),
-        ...(textParam as any),
+        ...requestBody,
+        input: `[${finalApiPayload.length} items]`,
       })}`
     );
 
     try {
       // First cast to unknown, then to AsyncIterable to satisfy TypeScript's type safety
-      const stream = (await this.client.responses.create({
-        model: model,
-        instructions: systemPrompt,
-        previous_response_id: previousResponseId, // Pass state ID
-        input: apiInput as any,
-        tools: finalTools,
-        store: store,
-        stream: true,
-        ...(reasoningParam as any),
-        ...(samplingParams as any),
-        ...(textParam as any),
-      })) as unknown as AsyncIterable<any>;
+      const stream = (await this.client.responses.create(
+        requestBody as any
+      )) as unknown as AsyncIterable<any>;
 
       for await (const event of stream) {
-        console.log(
-          `SNOWGANDER: Received stream event: ${JSON.stringify(event, null, 2)}`
-        );
+        // Log the type only: image events carry megabytes of base64
+        console.log(`SNOWGANDER: Received stream event: ${event.type}`);
         switch (event.type) {
           case "response.output_text.delta":
             if (event.delta) {
@@ -788,26 +777,34 @@ export class OpenAIAdapter implements AIVendorAdapter {
             }
             break;
 
-          case "response.image_generation_call.in_progress":
-            console.log(`Image in progress: ${JSON.stringify(event)}`);
-            if (event.item_id) {
-              currentImageGenerationId = event.item_id;
-              /*
-              console.log(
-                `[SNOWGANDER] Captured Image Generation ID: ${currentImageGenerationId}`
-              );
-              */
-            }
-            break;
-
           case "response.image_generation_call.partial_image":
-            console.log(`Image Partial Received: Item id: ${event.item_id}`);
             if (event.partial_image_b64) {
               yield {
                 type: "image_data",
-                id: currentImageGenerationId, // Add the captured ID here
-                mimeType: "image/png", // The API consistently generates PNGs
+                id: event.item_id ?? null,
+                mimeType: imageMimeType,
                 base64Data: event.partial_image_b64,
+                isPartial: true,
+                partialImageIndex: event.partial_image_index,
+              };
+            }
+            break;
+
+          case "response.output_item.done":
+            // The finished image arrives on the completed output item, not in a
+            // partial_image event.
+            if (
+              event.item?.type === "image_generation_call" &&
+              typeof event.item.result === "string" &&
+              event.item.result
+            ) {
+              yieldedFinalImageIds.add(event.item.id);
+              yield {
+                type: "image_data",
+                id: event.item.id ?? null,
+                mimeType: imageMimeType,
+                base64Data: event.item.result,
+                isPartial: false,
               };
             }
             break;
@@ -820,7 +817,6 @@ export class OpenAIAdapter implements AIVendorAdapter {
             };
             break;
 
-          // START of new code to add
           case "response.reasoning_summary_text.delta":
             if (event.delta) {
               yield {
@@ -830,10 +826,29 @@ export class OpenAIAdapter implements AIVendorAdapter {
               };
             }
             break;
-          // END of new code to add
 
           case "response.completed": // Capture final data
             finalResponseId = event.response.id;
+
+            // Fallback: yield any final image not already delivered via output_item.done
+            for (const item of event.response.output ?? []) {
+              if (
+                item?.type === "image_generation_call" &&
+                typeof item.result === "string" &&
+                item.result &&
+                !yieldedFinalImageIds.has(item.id)
+              ) {
+                yieldedFinalImageIds.add(item.id);
+                yield {
+                  type: "image_data",
+                  id: item.id ?? null,
+                  mimeType: imageMimeType,
+                  base64Data: item.result,
+                  isPartial: false,
+                };
+              }
+            }
+
             if (
               event.response.usage &&
               this.inputTokenCost &&
@@ -876,16 +891,57 @@ export class OpenAIAdapter implements AIVendorAdapter {
 
             break;
 
-          case "response.failed":
-            const errorMessage =
-              event.response?.error?.message || "Response failed in stream.";
+          case "response.incomplete": {
+            const reason =
+              event.response?.incomplete_details?.reason || "unknown";
+            yield {
+              type: "error",
+              code: reason,
+              publicMessage: "The response was cut off before it finished.",
+              privateMessage: `OpenAI response incomplete: ${reason}`,
+            };
+            break;
+          }
+
+          case "response.failed": {
+            const error = event.response?.error;
+            const errorMessage = error?.message || "Response failed in stream.";
             console.error(`OpenAI stream failed: ${errorMessage}`);
             yield {
               type: "error",
-              publicMessage: "The request failed during streaming.",
-              privateMessage: errorMessage,
+              code: error?.code ?? undefined,
+              publicMessage:
+                error?.code === "moderation_blocked"
+                  ? "The request was blocked by content moderation."
+                  : "The request failed during streaming.",
+              privateMessage: error?.moderation_details
+                ? `${errorMessage} (moderation_details: ${JSON.stringify(
+                    error.moderation_details
+                  )})`
+                : errorMessage,
             };
             return; // Terminate the generator on a failure event
+          }
+
+          case "error": {
+            // Top-level stream error event (e.g. moderation_blocked)
+            const errorMessage = event.message || "Stream error.";
+            console.error(`OpenAI stream error: ${errorMessage}`);
+            yield {
+              type: "error",
+              code: event.code ?? undefined,
+              publicMessage:
+                event.code === "moderation_blocked"
+                  ? "The request was blocked by content moderation."
+                  : "The request failed during streaming.",
+              privateMessage: event.moderation_details
+                ? `${errorMessage} (moderation_details: ${JSON.stringify(
+                    event.moderation_details
+                  )})`
+                : errorMessage,
+            };
+            return;
+          }
         }
       }
       if (finalResponseId) {
@@ -895,7 +951,11 @@ export class OpenAIAdapter implements AIVendorAdapter {
       console.error("Error during OpenAI stream:", error);
       yield {
         type: "error",
-        publicMessage: "An error occurred while streaming the response.",
+        code: error?.code ?? undefined,
+        publicMessage:
+          error?.code === "moderation_blocked"
+            ? "The request was blocked by content moderation."
+            : "An error occurred while streaming the response.",
         privateMessage: error.message || String(error),
       };
     }

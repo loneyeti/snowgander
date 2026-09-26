@@ -151,7 +151,7 @@ export class GrokAdapter implements AIVendorAdapter {
       size:
         openaiImageGenerationOptions?.size === "auto"
           ? undefined
-          : openaiImageGenerationOptions?.size,
+          : (openaiImageGenerationOptions?.size as any), // SDK types predate custom sizes
     });
 
     const contentBlocks: ContentBlock[] = [];

@@ -198,5 +198,17 @@ Never hardcode API keys or vendor settings. Always use `VendorConfig` and `Model
 **Tool/MCP Handling:**
 The approach is evolving. The Anthropic adapter now handles tools directly in `sendChat()` and `generateResponse()`. When adding new adapters, follow the pattern in `AnthropicAdapter` for tool integration.
 
+**OpenAI Image Generation Streaming:**
+Snowgoose streams images through `OpenAIAdapter.streamResponse()` using the Responses API
+`image_generation` tool (built by `buildImageGenerationTool` from `OpenAIImageGenerationOptions`;
+`partial_images` defaults to 2). Each image call yields `ImageDataBlock`s that share the `ig_...`
+item id: partial previews (`isPartial: true`, `partialImageIndex`) from
+`response.image_generation_call.partial_image`, then the final full-resolution image
+(`isPartial: false`) from `response.output_item.done` (with `response.completed` output as a
+fallback). Consumers should replace the displayed image by id and persist only the final block.
+For multi-turn edits, include an `ImageGenerationCallBlock` (`{type: "image_generation_call", id}`)
+in history (or use `previousResponseId`); `mapMessagesToApiInput` sends it as a reference and drops
+other image data. Moderation failures surface as an `ErrorBlock` with `code: "moderation_blocked"`.
+
 **OpenAI API Pattern:**
 The OpenAI adapter uses `client.responses.create()` for the latest OpenAI API format. New OpenAI-compatible adapters should follow this pattern.
