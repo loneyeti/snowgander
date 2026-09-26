@@ -115,7 +115,7 @@ describe("AnthropicAdapter", () => {
           { role: "user", content: [{ type: "text", text: "Hello Claude!" }] },
         ],
         system: undefined,
-        max_tokens: 1024,
+        max_tokens: 4096, // default, clamped to Claude 3 Opus's output limit
         temperature: undefined,
       });
     });
@@ -1054,6 +1054,7 @@ describe("AnthropicAdapter", () => {
         messages: basicMessages,
         thinkingMode: true,
         budgetTokens: 5000,
+        maxTokens: 8000,
       };
 
       await adapter.generateResponse(options);
@@ -1245,7 +1246,7 @@ describe("AnthropicAdapter", () => {
       const call = mockMessagesCreate.mock.calls[0][0];
       expect(call.thinking).toEqual({
         type: "enabled",
-        budget_tokens: 512, // Math.floor((maxTokens ?? 1024) / 2) fallback
+        budget_tokens: 8000, // half of the 16000 non-streaming default max_tokens
       });
       expect(call.output_config).toBeUndefined();
     });
@@ -1546,6 +1547,8 @@ describe("AnthropicAdapter", () => {
         ["claude-sonnet-5", "adaptiveOnly", "none"],
         ["claude-fable-5", "adaptiveOnly", "none"],
         ["claude-mythos-5", "adaptiveOnly", "none"],
+        ["claude-opus-5", "adaptiveOnly", "none"],
+        ["claude-opus-5-5", "adaptiveOnly", "none"],
         ["some-unknown-future-model", "legacyBudget", "single"],
       ])(
         "classifies %s as thinking tier '%s' and sampling policy '%s'",
@@ -1633,6 +1636,175 @@ describe("AnthropicAdapter", () => {
       await expect(stream.next()).rejects.toThrow(
         /does not support sampling parameters/
       );
+    });
+  });
+
+  describe("max_tokens defaults and truncation", () => {
+    const basicMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "Write a long essay" }] },
+    ];
+    const modelConfig = (apiName: string): ModelConfig => ({
+      apiName,
+      isVision: false,
+      isImageGeneration: false,
+      isThinking: true,
+    });
+    const okResponse = (model: string, stop_reason = "end_turn") => ({
+      id: "msg_mt",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "partial..." }],
+      model,
+      stop_reason,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    async function* streamWithStop(stop_reason: string) {
+      yield {
+        type: "message_start",
+        message: { id: "msg_stream_mt", usage: { input_tokens: 10 } },
+      };
+      yield {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "text", text: "" },
+      };
+      yield {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text: "partial..." },
+      };
+      yield { type: "content_block_stop", index: 0 };
+      yield {
+        type: "message_delta",
+        delta: { stop_reason },
+        usage: { output_tokens: 5 },
+      };
+      yield { type: "message_stop" };
+    }
+
+    it.each([
+      ["claude-opus-4-8", 16000],
+      ["claude-opus-5-5", 16000],
+      ["claude-opus-4-1-20250805", 8192],
+      ["claude-3-5-sonnet-20241022", 8192],
+      ["claude-3-haiku-20240307", 4096],
+    ])(
+      "defaults non-streaming max_tokens for %s to %i",
+      async (model, expected) => {
+        const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+        mockMessagesCreate.mockResolvedValue(okResponse(model));
+        await a.generateResponse({ model, messages: basicMessages });
+        expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(expected);
+      }
+    );
+
+    it.each([
+      ["claude-opus-4-8", 64000],
+      ["claude-opus-4-1-20250805", 32000],
+      ["claude-3-haiku-20240307", 4096],
+    ])("defaults streaming max_tokens for %s to %i", async (model, expected) => {
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(streamWithStop("end_turn"));
+      for await (const _ of a.streamResponse({ model, messages: basicMessages })) {
+        // drain
+      }
+      expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(expected);
+    });
+
+    it("passes an explicit maxTokens through unchanged", async () => {
+      const model = "claude-opus-4-8";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(okResponse(model));
+      await a.generateResponse({ model, messages: basicMessages, maxTokens: 300 });
+      expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(300);
+    });
+
+    it("sendChat without maxTokens uses the default, not 1024", async () => {
+      const model = "claude-sonnet-5";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(okResponse(model));
+      await a.sendChat({
+        model,
+        responseHistory: [],
+        prompt: "Write a long essay",
+        maxTokens: null,
+        budgetTokens: null,
+      } as unknown as Chat);
+      expect(mockMessagesCreate.mock.calls[0][0].max_tokens).toBe(16000);
+    });
+
+    it("clamps a legacy budget_tokens that would consume all of max_tokens", async () => {
+      const model = "claude-sonnet-4-5-20250929";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(okResponse(model));
+      await a.generateResponse({
+        model,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 20000,
+        maxTokens: 10000,
+      });
+      expect(mockMessagesCreate.mock.calls[0][0].thinking).toEqual({
+        type: "enabled",
+        budget_tokens: 8976,
+      });
+    });
+
+    it("appends an ErrorBlock when a non-streaming response hits max_tokens", async () => {
+      const model = "claude-opus-4-8";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(okResponse(model, "max_tokens"));
+      const res = await a.generateResponse({ model, messages: basicMessages });
+      expect(res.content[0]).toEqual({ type: "text", text: "partial..." });
+      expect(res.content[1]).toEqual({
+        type: "error",
+        publicMessage:
+          "Response was truncated because it hit the max token limit.",
+        privateMessage: "Stop reason: max_tokens (max_tokens: 16000)",
+      });
+    });
+
+    it("yields an ErrorBlock before the meta block when a stream hits max_tokens", async () => {
+      const model = "claude-opus-4-8";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(streamWithStop("max_tokens"));
+      const chunks: ContentBlock[] = [];
+      for await (const c of a.streamResponse({ model, messages: basicMessages })) {
+        chunks.push(c);
+      }
+      expect(chunks.map((c) => c.type)).toEqual(["text", "error", "meta"]);
+      expect((chunks[1] as any).privateMessage).toBe(
+        "Stop reason: max_tokens (max_tokens: 64000)"
+      );
+    });
+
+    it("does not yield an ErrorBlock for a normal stream end", async () => {
+      const model = "claude-opus-4-8";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(streamWithStop("end_turn"));
+      const chunks: ContentBlock[] = [];
+      for await (const c of a.streamResponse({ model, messages: basicMessages })) {
+        chunks.push(c);
+      }
+      expect(chunks.map((c) => c.type)).toEqual(["text", "meta"]);
+    });
+
+    it("sends adaptive thinking (never budget_tokens) and rejects temperature for Opus 5.5", async () => {
+      const model = "claude-opus-5-5";
+      const a = new AnthropicAdapter(mockConfig, modelConfig(model));
+      mockMessagesCreate.mockResolvedValue(okResponse(model));
+      await a.generateResponse({
+        model,
+        messages: basicMessages,
+        thinkingMode: true,
+        budgetTokens: 5000,
+      });
+      expect(mockMessagesCreate.mock.calls[0][0].thinking).toEqual({
+        type: "adaptive",
+      });
+      await expect(
+        a.generateResponse({ model, messages: basicMessages, temperature: 0.5 })
+      ).rejects.toThrow(/does not support sampling parameters/);
     });
   });
 });

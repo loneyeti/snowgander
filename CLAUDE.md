@@ -128,13 +128,13 @@ and its sampling-parameter constraints don't change in lockstep across releases:
 |---|---|---|---|
 | `legacyBudget` (default/fallback) | Claude 3.x, Opus 4.0/4.1/4.5, Sonnet 4.0/4.5, Haiku 3.x/4.5, any unrecognized model | `thinking: {type: "enabled", budget_tokens: N}` | none — no `output_config` |
 | `adaptiveTransitional` | `claude-opus-4-6`, `claude-sonnet-4-6` | `thinking: {type: "adaptive"}` | low / medium / high / max |
-| `adaptiveOnly` | `claude-opus-4-7`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5`, `claude-mythos-5` | `thinking: {type: "adaptive"}` only — `budget_tokens` is never sent | low / medium / high / xhigh / max |
+| `adaptiveOnly` | `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`, `claude-opus-5-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-mythos-5` | `thinking: {type: "adaptive"}` only — `budget_tokens` is never sent | low / medium / high / xhigh / max |
 
 | Sampling policy | Models | Behavior |
 |---|---|---|
 | `both` | Claude 2.x / 3.x only | `temperature` and `topP` may both be sent |
 | `single` | Everything 4.x that isn't `adaptiveOnly` (4.0-4.5, the 4.6 family, Sonnet 4.5, Haiku 4.5, etc.) | At most one of `temperature`/`topP` — throws if both are set |
-| `none` | `adaptiveOnly` tier (Opus 4.7/4.8, Sonnet 5, Fable 5, Mythos 5) | Throws if *either* `temperature` or `topP` is set at all |
+| `none` | `adaptiveOnly` tier (Opus 4.7/4.8, Opus 5/5.5, Sonnet 5, Fable 5, Mythos 5) | Throws if *either* `temperature` or `topP` is set at all |
 
 Other tier-driven behavior:
 - `effort` (`"low" | "medium" | "high" | "xhigh" | "max"`) is honored on both adaptive tiers; when
@@ -142,6 +142,14 @@ Other tier-driven behavior:
   low/medium/high — `xhigh`/`max` require an explicit `effort` value.
 - `outputFormat` (structured outputs via `output_config.format`) is supported on both adaptive
   tiers, not just `adaptiveOnly`.
+- Default `max_tokens` (when the caller doesn't set `maxTokens`, e.g. Snowgoose): `max_tokens` caps
+  thinking + text combined, so the adapter defaults high: **64000 for `streamResponse`**, **16000 for
+  `generateResponse`/`sendChat`** (the SDK throws for non-streaming requests above ~21.3k, and above
+  8192 for Opus 4.0/4.1). Both are clamped to the model's max output (`getMaxOutputTokens`: 4096 for
+  Claude 3 Opus/Sonnet/Haiku, 8192 for 3.5, 32000 for Opus 4.0/4.1, 64000 otherwise). Legacy-tier
+  `budget_tokens` is clamped so at least 1024 tokens remain for the answer.
+- Stop reason `max_tokens` produces an `ErrorBlock` (appended in `generateResponse`, yielded before
+  the meta block in `streamResponse`) so truncation is never silent.
 - Stop reason `refusal` includes `stop_details.category` (e.g. `"cyber"`, `"bio"`) in the
   `ErrorBlock.privateMessage` when the SDK response provides it. `model_context_window_exceeded`
   is also handled.

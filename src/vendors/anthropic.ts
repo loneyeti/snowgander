@@ -108,6 +108,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
     if (
       modelName.includes("claude-opus-4-7") ||
       modelName.includes("claude-opus-4-8") ||
+      modelName.includes("claude-opus-5") || // Opus 5 and Opus 5.5
       modelName.includes("claude-sonnet-5") ||
       modelName.includes("claude-fable-5") ||
       modelName.includes("claude-mythos-5")
@@ -150,6 +151,55 @@ export class AnthropicAdapter implements AIVendorAdapter {
     // Every other Claude 4.x-family model (4.0/4.1/4.5, the 4.6 family, Sonnet
     // 4.5, Haiku 4.5, etc.) accepts at most one sampling parameter.
     return "single";
+  }
+
+  /**
+   * Opus 4.0 / 4.1 get special handling: a lower output ceiling, and the SDK
+   * refuses non-streaming requests above 8192 max_tokens for them.
+   */
+  private isOpus40or41(modelName: string): boolean {
+    return (
+      /claude-opus-4-(0|1|20\d{6})/.test(modelName) ||
+      modelName.includes("claude-4-opus")
+    );
+  }
+
+  /**
+   * Maximum output tokens (thinking + text) the model accepts for max_tokens.
+   * Unknown/future models get 64000, which every current model supports.
+   */
+  private getMaxOutputTokens(modelName: string): number {
+    if (
+      modelName.includes("claude-3-opus") ||
+      modelName.includes("claude-3-haiku") ||
+      modelName.includes("claude-3-sonnet")
+    ) {
+      return 4096;
+    }
+    if (modelName.includes("claude-3-5")) return 8192;
+    if (this.isOpus40or41(modelName)) return 32000;
+    return 64000;
+  }
+
+  /**
+   * Default max_tokens used when the caller doesn't set one. max_tokens is a
+   * hard cap on thinking + text combined, so a small default silently
+   * truncates long answers. It's only a ceiling (billing is per token
+   * actually produced), so we default high:
+   * - streaming: 64000 (Anthropic's recommended starting point for xhigh/max effort)
+   * - non-streaming: 16000, because the SDK throws for non-streaming requests
+   *   whose max_tokens implies >10 minutes (~21.3k tokens; 8192 for Opus 4.0/4.1)
+   * Both are clamped to the model's max output.
+   */
+  private getDefaultMaxTokens(modelName: string, streaming: boolean): number {
+    let limit = Math.min(
+      streaming ? 64000 : 16000,
+      this.getMaxOutputTokens(modelName)
+    );
+    if (!streaming && this.isOpus40or41(modelName)) {
+      limit = Math.min(limit, 8192);
+    }
+    return limit;
   }
 
   /**
@@ -215,7 +265,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
     tier: ThinkingTier,
     thinkingMode: boolean | undefined,
     budgetTokens: number | undefined,
-    maxTokens: number | undefined,
+    maxTokens: number,
     effort: AIRequestOptions["effort"],
     outputFormat: any
   ): { thinking?: any; output_config?: any } {
@@ -224,9 +274,16 @@ export class AnthropicAdapter implements AIVendorAdapter {
     if (thinkingMode && this.isThinkingCapable) {
       if (tier === "legacyBudget") {
         // Use legacy budget_tokens for models without adaptive thinking support.
+        // budget_tokens must be < max_tokens; reserve at least 1024 tokens for
+        // the answer so thinking can't consume the whole output (1024 is also
+        // the API's minimum budget).
+        const maxBudget = Math.max(1024, maxTokens - 1024);
         result.thinking = {
           type: "enabled",
-          budget_tokens: budgetTokens || Math.floor((maxTokens || 1024) / 2),
+          budget_tokens: Math.min(
+            budgetTokens || Math.floor(maxTokens / 2),
+            maxBudget
+          ),
         };
       } else {
         // Use adaptive thinking for adaptiveTransitional/adaptiveOnly tiers.
@@ -250,6 +307,20 @@ export class AnthropicAdapter implements AIVendorAdapter {
     }
 
     return result;
+  }
+
+  /**
+   * ErrorBlock for stop_reason "max_tokens". Shared between generateResponse
+   * and streamResponse.
+   */
+  private buildMaxTokensError(maxTokens: number): ContentBlock {
+    console.warn(`Response truncated: hit max_tokens limit (${maxTokens})`);
+    return {
+      type: "error",
+      publicMessage:
+        "Response was truncated because it hit the max token limit.",
+      privateMessage: `Stop reason: max_tokens (max_tokens: ${maxTokens})`,
+    };
   }
 
   /**
@@ -410,12 +481,15 @@ export class AnthropicAdapter implements AIVendorAdapter {
     // Convert messages to Anthropic format
     const formattedMessages = this.formatMessages(messages, model);
 
+    const resolvedMaxTokens =
+      maxTokens || this.getDefaultMaxTokens(model, false);
+
     // Build thinking / output_config request fragment
     const thinkingParams = this.buildThinkingParams(
       tier,
       thinkingMode,
       budgetTokens,
-      maxTokens,
+      resolvedMaxTokens,
       effort,
       outputFormat
     );
@@ -425,7 +499,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       model,
       messages: formattedMessages,
       system: systemPrompt,
-      max_tokens: maxTokens || 1024,
+      max_tokens: resolvedMaxTokens,
       ...samplingParams,
       ...thinkingParams,
     };
@@ -505,6 +579,10 @@ export class AnthropicAdapter implements AIVendorAdapter {
       });
     }
 
+    if (stopReason === "max_tokens") {
+      contentBlocks.push(this.buildMaxTokensError(resolvedMaxTokens));
+    }
+
     if (stopReason === "model_context_window_exceeded") {
       console.warn("Response stopped due to context window limit");
       contentBlocks.push({
@@ -563,12 +641,15 @@ export class AnthropicAdapter implements AIVendorAdapter {
     const formattedMessages = this.formatMessages(messages, model);
 
     try {
+      const resolvedMaxTokens =
+        maxTokens || this.getDefaultMaxTokens(model, true);
+
       // Build stream request parameters based on model tier
       const baseStreamParams = {
         model,
         messages: formattedMessages,
         system: systemPrompt,
-        max_tokens: maxTokens || 1024,
+        max_tokens: resolvedMaxTokens,
         stream: true as const, // Use 'as const' to ensure TypeScript knows this is always true
       };
 
@@ -576,7 +657,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
         tier,
         thinkingMode,
         budgetTokens,
-        maxTokens,
+        resolvedMaxTokens,
         effort,
         outputFormat
       );
@@ -593,6 +674,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
       let finalResponseId: string | undefined = undefined;
       let inputTokens = 0;
       let outputTokens = 0;
+      let stopReason: string | null | undefined = undefined;
 
       for await (const event of stream) {
         switch (event.type) {
@@ -680,12 +762,20 @@ export class AnthropicAdapter implements AIVendorAdapter {
             if (event.usage) {
               outputTokens = event.usage.output_tokens;
             }
+            if (event.delta?.stop_reason) {
+              stopReason = event.delta.stop_reason;
+            }
             break;
 
           case "message_stop":
             // This event signals the end of the stream. We will yield our meta block after the loop.
             break;
         }
+      }
+
+      // Surface truncation so callers don't silently get a partial answer.
+      if (stopReason === "max_tokens") {
+        yield this.buildMaxTokensError(resolvedMaxTokens);
       }
 
       // After the loop, calculate the final usage and yield the meta block.
