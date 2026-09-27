@@ -24,6 +24,7 @@ export type {
   Message,
   OpenAIImageGenerationOptions,
   OpenAIImageEditOptions,
+  GrokImageAspectRatio,
   ImageGenerationResponse,
   ImageEditResponse,
   MetaBlock,

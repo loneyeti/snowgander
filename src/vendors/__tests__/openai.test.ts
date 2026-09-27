@@ -503,6 +503,8 @@ describe("OpenAIAdapter", () => {
         };
         yield {
           type: "response.image_generation_call.partial_image",
+          item_id: "ig_1",
+          partial_image_index: 0,
           partial_image_b64: mockImageBase64,
         };
         yield { type: "response.output_text.delta", delta: "!" };
@@ -524,12 +526,245 @@ describe("OpenAIAdapter", () => {
         { type: "text", text: "Here is your image: " },
         {
           type: "image_data",
-          id: null,
+          id: "ig_1",
           mimeType: "image/png",
           base64Data: mockImageBase64,
+          isPartial: true,
+          partialImageIndex: 0,
         },
         { type: "text", text: "!" },
       ]);
+    });
+
+    describe("image generation streaming", () => {
+      const imageGenOptions: AIRequestOptions = {
+        ...basicOptions,
+        openaiImageGenerationOptions: {},
+      };
+
+      const collect = async (options: AIRequestOptions) => {
+        const blocks: ContentBlock[] = [];
+        for await (const block of adapter.streamResponse(options)) {
+          blocks.push(block);
+        }
+        return blocks;
+      };
+
+      it("yields partials then the final image from output_item.done under one id", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {
+          yield {
+            type: "response.image_generation_call.partial_image",
+            item_id: "ig_1",
+            partial_image_index: 0,
+            partial_image_b64: "partial-0",
+          };
+          yield {
+            type: "response.image_generation_call.partial_image",
+            item_id: "ig_1",
+            partial_image_index: 1,
+            partial_image_b64: "partial-1",
+          };
+          yield {
+            type: "response.output_item.done",
+            item: { type: "image_generation_call", id: "ig_1", result: "final" },
+          };
+          yield {
+            type: "response.completed",
+            response: {
+              id: "resp-1",
+              output: [
+                { type: "image_generation_call", id: "ig_1", result: "final" },
+              ],
+            },
+          };
+        }
+        mockResponsesCreate.mockResolvedValue(mockStream());
+
+        const blocks = await collect(imageGenOptions);
+
+        expect(blocks).toEqual([
+          {
+            type: "image_data",
+            id: "ig_1",
+            mimeType: "image/png",
+            base64Data: "partial-0",
+            isPartial: true,
+            partialImageIndex: 0,
+          },
+          {
+            type: "image_data",
+            id: "ig_1",
+            mimeType: "image/png",
+            base64Data: "partial-1",
+            isPartial: true,
+            partialImageIndex: 1,
+          },
+          {
+            type: "image_data",
+            id: "ig_1",
+            mimeType: "image/png",
+            base64Data: "final",
+            isPartial: false,
+          },
+          { type: "meta", responseId: "resp-1", usage: undefined },
+        ]);
+      });
+
+      it("falls back to response.completed output for the final image, once, before meta", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {
+          yield {
+            type: "response.completed",
+            response: {
+              id: "resp-2",
+              output: [
+                { type: "image_generation_call", id: "ig_2", result: "final" },
+              ],
+            },
+          };
+        }
+        mockResponsesCreate.mockResolvedValue(mockStream());
+
+        const blocks = await collect(imageGenOptions);
+
+        expect(blocks).toEqual([
+          {
+            type: "image_data",
+            id: "ig_2",
+            mimeType: "image/png",
+            base64Data: "final",
+            isPartial: false,
+          },
+          { type: "meta", responseId: "resp-2", usage: undefined },
+        ]);
+      });
+
+      it("sends an image_generation_call reference from history and skips other image data", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {}
+        mockResponsesCreate.mockResolvedValue(mockStream());
+
+        await collect({
+          ...imageGenOptions,
+          messages: [
+            { role: "user", content: [{ type: "text", text: "Draw a cat" }] },
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: "Here it is" },
+                {
+                  type: "image_data",
+                  id: "ig_3",
+                  mimeType: "image/png",
+                  base64Data: "old-image",
+                },
+                { type: "image_generation_call", id: "ig_3" },
+              ],
+            },
+            {
+              role: "user",
+              content: [{ type: "text", text: "Make it orange" }],
+            },
+          ],
+        });
+
+        const callArgs = mockResponsesCreate.mock.calls[0][0];
+        expect(callArgs.input).toEqual([
+          { role: "user", content: [{ type: "input_text", text: "Draw a cat" }] },
+          {
+            role: "assistant",
+            content: [{ type: "output_text", text: "Here it is" }],
+          },
+          {
+            role: "user",
+            content: [{ type: "input_text", text: "Make it orange" }],
+          },
+          { type: "image_generation_call", id: "ig_3" },
+        ]);
+      });
+
+      it("maps tool options and uses the output format's MIME type", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {
+          yield {
+            type: "response.image_generation_call.partial_image",
+            item_id: "ig_4",
+            partial_image_index: 0,
+            partial_image_b64: "partial",
+          };
+        }
+        mockResponsesCreate.mockResolvedValue(mockStream());
+
+        const blocks = await collect({
+          ...basicOptions,
+          openaiImageGenerationOptions: {
+            model: "gpt-image-2.5-flare",
+            outputFormat: "webp",
+            outputCompression: 80,
+            partialImages: 3,
+            quality: "xhigh",
+            size: "2048x1152",
+            background: "auto",
+            action: "edit",
+          },
+        });
+
+        const callArgs = mockResponsesCreate.mock.calls[0][0];
+        expect(callArgs.tools).toEqual([
+          {
+            type: "image_generation",
+            partial_images: 3,
+            model: "gpt-image-2.5-flare",
+            quality: "xhigh",
+            size: "2048x1152",
+            output_format: "webp",
+            output_compression: 80,
+            action: "edit",
+          },
+        ]);
+        expect((blocks[0] as any).mimeType).toBe("image/webp");
+      });
+
+      it("defaults partial_images to 2", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {}
+        mockResponsesCreate.mockResolvedValue(mockStream());
+
+        await collect(imageGenOptions);
+
+        expect(mockResponsesCreate.mock.calls[0][0].tools).toEqual([
+          { type: "image_generation", partial_images: 2 },
+        ]);
+      });
+
+      it("yields an ErrorBlock with the code for a moderation_blocked error event", async () => {
+        const { mockResponsesCreate } = getMockOpenAIClient();
+        async function* mockStream() {
+          yield {
+            type: "error",
+            code: "moderation_blocked",
+            message: "Your request was rejected by the safety system.",
+            moderation_details: { moderation_stage: "input", categories: ["violence"] },
+          };
+          yield { type: "response.output_text.delta", delta: "unreachable" };
+        }
+        mockResponsesCreate.mockResolvedValue(mockStream());
+        const consoleErrorSpy = jest
+          .spyOn(console, "error")
+          .mockImplementation(() => {});
+
+        const blocks = await collect(imageGenOptions);
+
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0]).toMatchObject({
+          type: "error",
+          code: "moderation_blocked",
+          publicMessage: "The request was blocked by content moderation.",
+        });
+        expect((blocks[0] as any).privateMessage).toContain("violence");
+        consoleErrorSpy.mockRestore();
+      });
     });
 
     it("should yield an ErrorBlock for 'response.failed' event", async () => {

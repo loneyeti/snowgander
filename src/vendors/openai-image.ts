@@ -263,12 +263,12 @@ export class OpenAIImageAdapter implements AIVendorAdapter {
         quality:
           openaiImageGenerationOptions.quality === "auto"
             ? undefined
-            : openaiImageGenerationOptions.quality,
+            : (openaiImageGenerationOptions.quality as any), // SDK types predate xhigh/max
         //response_format: "b64_json", // Force b64_json
         size:
           openaiImageGenerationOptions.size === "auto"
             ? undefined
-            : openaiImageGenerationOptions.size,
+            : (openaiImageGenerationOptions.size as any), // SDK types predate custom sizes
         user: openaiImageGenerationOptions.user,
         background:
           openaiImageGenerationOptions.background === "auto"
