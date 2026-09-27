@@ -286,6 +286,7 @@ interface ChatResponse {
   - `ImageDataBlock`: Contains generated image data (`{ type: 'image_data', ... }`).
   - `ThinkingBlock`: Contains structured thinking steps from the model (`{ type: 'thinking', ... }`).
   - `ToolUseBlock`: Indicates the AI wants to use a tool that your application must handle.
+  - `ServerToolUseBlock` / `WebSearchToolResultBlock` / `WebFetchToolResultBlock`: web research steps and their results (see [Web Search](#web-search-and-grounded-research-openai-and-claude)).
   - `ErrorBlock`: If an error occurred (`{ type: 'error', ... }`).
 - **`usage`**: If available, provides the estimated cost for the interaction based on token counts.
 
@@ -294,6 +295,41 @@ interface ChatResponse {
 1.  Check the `role` (e.g., handle an `"error"` role).
 2.  Iterate through the `content` array to process and display the different blocks appropriately (e.g., render text, display images, trigger tool execution).
 3.  **For conversations, add the entire response object to your `responseHistory`** so the AI has context for the next turn.
+
+## Web Search and Grounded Research (OpenAI and Claude)
+
+Pass `webSearch` and the adapter adds its vendor's server-side tools. You don't write tool definitions or run a tool loop.
+
+```typescript
+const stream = adapter.streamResponse({
+  model: "claude-opus-5-5", // or an OpenAI model
+  messages,
+  webSearch: {
+    fetch: true, // Claude only: also let the model read full pages (web_fetch)
+    maxUses: 5, // Claude only
+    allowedDomains: ["example.com"], // or blockedDomains (Claude only)
+    userLocation: { country: "US", timezone: "America/Denver" },
+  },
+});
+```
+
+- **OpenAI** gets the current `web_search` tool, plus `include: ["web_search_call.action.sources"]`. A legacy `web_search_preview` tool passed in `tools` is upgraded to `web_search`.
+- **Claude** gets `web_search_20260209` / `web_fetch_20260209` on Opus/Sonnet 4.6+ and the Claude 5 family, and `web_search_20250305` / `web_fetch_20250910` on older models.
+
+Research is returned as content blocks you can show to the user:
+
+| Block | Meaning |
+|---|---|
+| `server_tool_use` | One research step. `name` is `web_search` or `web_fetch`, and `input` is JSON such as `{"query": "..."}` or `{"url": "..."}`. OpenAI streams it twice with the same `id`: `status: "in_progress"`, then `"completed"`. |
+| `web_search_tool_result` | The results for a step: `results: [{url, title?, pageAge?}]`, or `errorCode`. |
+| `web_fetch_tool_result` | A fetched page: `url`, `title`, `retrievedAt`, or `errorCode`. |
+| `text` with `citations` | `citations: [{url, title?, citedText?, startIndex?, endIndex?}]`. When streaming, citations arrive as empty-text chunks (`{type: "text", text: "", citations: [...]}`). Attach them to the current text block. |
+
+Keep these blocks in `responseHistory`. On later turns the Claude adapter sends Claude's search and fetch blocks back verbatim, including the `raw` field with encrypted content. This keeps citations valid. Other adapters, and OpenAI (which uses `previousResponseId`), drop them.
+
+Cost: `ModelConfig.webSearchCost` is charged **per search call**. `usage` reports `webSearchCount`, `webSearchCost`, and, for Claude, `webFetchCount`. Fetches cost tokens only.
+
+When Claude's server tools pause a long turn (`pause_turn`), the adapter continues it automatically, up to 3 times.
 
 ## Anthropic Models: Thinking, Effort, and Sampling Parameters
 

@@ -7,7 +7,7 @@ export interface ModelConfig {
   inputTokenCost?: number;
   outputTokenCost?: number;
   imageOutputTokenCost?: number; // New: Cost for generated image output tokens
-  webSearchCost?: number; // New: Flat fee for using the web search tool
+  webSearchCost?: number; // Fee per web search call
   // Add any other fields from the original Model used by adapters if needed
 }
 
@@ -36,6 +36,75 @@ export interface RedactedThinkingBlock {
 export interface TextBlock {
   type: "text";
   text: string;
+  // Web sources this text is grounded in (OpenAI url_citation annotations,
+  // Claude web_search_result_location / web_fetch document citations).
+  // Streaming adapters may yield empty-text chunks that carry only citations.
+  citations?: Citation[];
+}
+
+// --- Grounded web research ---
+
+export interface Citation {
+  type: "url_citation";
+  url: string;
+  title?: string;
+  citedText?: string; // Claude: the quoted source text
+  startIndex?: number; // OpenAI: character offsets into the output text
+  endIndex?: number;
+  vendor: "openai" | "anthropic";
+  raw?: unknown; // Original vendor citation object
+}
+
+// One research step: a web search or page fetch run by the vendor's server.
+export interface ServerToolUseBlock {
+  type: "server_tool_use";
+  id: string;
+  name: string; // "web_search" | "web_fetch"
+  input: string; // JSON string, e.g. {"query": "..."} or {"url": "..."}
+  status?: "in_progress" | "completed" | "failed";
+  vendor: "openai" | "anthropic";
+}
+
+export interface WebSearchResultItem {
+  url: string;
+  title?: string;
+  pageAge?: string | null;
+}
+
+export interface WebSearchToolResultBlock {
+  type: "web_search_tool_result";
+  toolUseId: string;
+  results: WebSearchResultItem[];
+  errorCode?: string;
+  vendor: "openai" | "anthropic";
+  // Claude: the verbatim API block (with encrypted_content). Keep it in history
+  // so the adapter can send it back on later turns.
+  raw?: unknown;
+}
+
+export interface WebFetchToolResultBlock {
+  type: "web_fetch_tool_result";
+  toolUseId: string;
+  url?: string;
+  title?: string;
+  retrievedAt?: string | null;
+  errorCode?: string;
+  vendor: "anthropic";
+  raw?: unknown; // Verbatim API block, echoed back in history
+}
+
+// Vendor-neutral web search request options. Each adapter builds its own tool.
+export interface WebSearchOptions {
+  fetch?: boolean; // Claude only: also enable web_fetch
+  maxUses?: number; // Claude only: max searches (and fetches) per request
+  allowedDomains?: string[];
+  blockedDomains?: string[]; // Claude only
+  userLocation?: {
+    city?: string;
+    region?: string;
+    country?: string; // ISO 3166-1 alpha-2
+    timezone?: string; // IANA timezone
+  };
 }
 
 // Represents URL-based images
@@ -92,6 +161,9 @@ export type ContentBlock =
   | ToolResultBlock
   | ErrorBlock // Added ErrorBlock
   | ImageGenerationCallBlock
+  | ServerToolUseBlock
+  | WebSearchToolResultBlock
+  | WebFetchToolResultBlock
   | MetaBlock; // Add MetaBlock here
 
 export interface MCPAvailableTool {
@@ -152,9 +224,11 @@ export interface Message {
 export interface UsageResponse {
   inputCost: number;
   outputCost: number;
-  webSearchCost?: number; // New: The flat fee for web search, if applied
+  webSearchCost?: number; // ModelConfig.webSearchCost x webSearchCount
   didGenerateImage?: boolean;
   didWebSearch?: boolean;
+  webSearchCount?: number; // Web searches run by the vendor for this response
+  webFetchCount?: number; // Claude web fetches (billed as tokens only)
   totalCost: number;
 }
 
@@ -190,6 +264,9 @@ export interface AIRequestOptions {
   previousResponseId?: string; // Add this line
   // Generic tools array for API calls
   tools?: any[];
+  // Grounded web research: the adapter adds its vendor's web search (and, for
+  // Claude, web fetch) tool. Ignored by adapters without web search support.
+  webSearch?: WebSearchOptions;
   // Data retention control
   store?: boolean; // Whether to store the response (default true)
   // Optional: Specific options for OpenAI Image Generation API
