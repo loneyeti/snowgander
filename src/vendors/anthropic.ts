@@ -16,12 +16,17 @@ import {
   ImageDataBlock,
   NotImplementedError, // Import error type
   ImageGenerationResponse, // Import response type
+  Citation,
+  WebSearchOptions,
 } from "../types";
 import { computeResponseCost } from "../utils";
 // Import necessary types from Anthropic SDK
 import {
   Tool as AnthropicTool,
   ToolUseBlockParam,
+  ServerToolUseBlockParam,
+  WebSearchToolResultBlockParam,
+  WebFetchToolResultBlockParam,
 } from "@anthropic-ai/sdk/resources/messages";
 // Removed Prisma Model import
 // Removed application-specific imports (updateUserUsage, getCurrentAPIUser)
@@ -61,7 +66,15 @@ type FormattedAnthropicContentBlock =
       tool_use_id: string;
       content: string | Array<{ type: "text"; text: string }>;
     }
-  | ToolUseBlockParam; // Add Anthropic's ToolUseBlockParam type
+  | ToolUseBlockParam // Add Anthropic's ToolUseBlockParam type
+  | ServerToolUseBlockParam
+  // Echoed verbatim from a previous response (encrypted_content etc.)
+  | WebSearchToolResultBlockParam
+  | WebFetchToolResultBlockParam;
+
+// Server tools stop with pause_turn after about 10 iterations. The adapter
+// sends the paused turn back to continue, up to this many times per request.
+const MAX_PAUSE_CONTINUATIONS = 3;
 
 type FormattedAnthropicMessage = {
   role: "user" | "assistant";
@@ -75,6 +88,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
   public isThinkingCapable: boolean;
   public inputTokenCost?: number | undefined;
   public outputTokenCost?: number | undefined;
+  private webSearchCost?: number;
 
   // Constructor now accepts ModelConfig instead of Prisma Model
   constructor(config: VendorConfig, modelConfig: ModelConfig) {
@@ -87,6 +101,7 @@ export class AnthropicAdapter implements AIVendorAdapter {
     this.isVisionCapable = modelConfig.isVision;
     this.isImageGenerationCapable = modelConfig.isImageGeneration;
     this.isThinkingCapable = modelConfig.isThinking;
+    this.webSearchCost = modelConfig.webSearchCost;
 
     if (modelConfig.inputTokenCost && modelConfig.outputTokenCost) {
       this.inputTokenCost = modelConfig.inputTokenCost;
@@ -402,6 +417,16 @@ export class AnthropicAdapter implements AIVendorAdapter {
         privateMessage: `Stop reason: max_tokens (max_tokens: ${maxTokens})`,
       };
     }
+    if (stopReason === "pause_turn") {
+      // Only reached once MAX_PAUSE_CONTINUATIONS is used up
+      console.warn("Response still paused after the continuation limit");
+      return {
+        type: "error",
+        publicMessage:
+          "The research step limit was reached before the answer finished.",
+        privateMessage: `Stop reason: pause_turn after ${MAX_PAUSE_CONTINUATIONS} continuations`,
+      };
+    }
     if (stopReason === "model_context_window_exceeded") {
       console.warn("Response stopped due to context window limit");
       return {
@@ -411,6 +436,167 @@ export class AnthropicAdapter implements AIVendorAdapter {
       };
     }
     return undefined;
+  }
+
+  /**
+   * Builds the server-side web_search (and optionally web_fetch) tools. Models
+   * on an adaptive thinking tier (4.6+, Claude 5 family) get the _20260209
+   * variants with dynamic filtering; older models get the basic variants.
+   */
+  private buildWebTools(model: string, opts: WebSearchOptions): any[] {
+    const current = this.getThinkingTier(model) !== "legacyBudget";
+    // The API accepts allowed_domains or blocked_domains, never both
+    let domains: Record<string, string[]> = {};
+    if (opts.allowedDomains?.length) {
+      domains = { allowed_domains: opts.allowedDomains };
+      if (opts.blockedDomains?.length) {
+        console.warn(
+          "webSearch.allowedDomains and blockedDomains are exclusive; ignoring blockedDomains."
+        );
+      }
+    } else if (opts.blockedDomains?.length) {
+      domains = { blocked_domains: opts.blockedDomains };
+    }
+    const maxUses = opts.maxUses !== undefined ? { max_uses: opts.maxUses } : {};
+
+    const loc = opts.userLocation;
+    const search: any = {
+      type: current ? "web_search_20260209" : "web_search_20250305",
+      name: "web_search",
+      ...maxUses,
+      ...domains,
+    };
+    if (loc && (loc.city || loc.region || loc.country || loc.timezone)) {
+      search.user_location = {
+        type: "approximate",
+        ...(loc.city && { city: loc.city }),
+        ...(loc.region && { region: loc.region }),
+        ...(loc.country && { country: loc.country }),
+        ...(loc.timezone && { timezone: loc.timezone }),
+      };
+    }
+    const tools = [search];
+    if (opts.fetch) {
+      tools.push({
+        type: current ? "web_fetch_20260209" : "web_fetch_20250910",
+        name: "web_fetch",
+        ...maxUses,
+        ...domains,
+        citations: { enabled: true },
+      });
+    }
+    return tools;
+  }
+
+  /**
+   * Caller tools plus the web tools requested via `webSearch`. A caller tool
+   * with the same name wins.
+   */
+  private buildRequestTools(
+    model: string,
+    tools: any[] | undefined,
+    webSearch: WebSearchOptions | undefined
+  ): any[] | undefined {
+    if (!webSearch) return tools;
+    const existing = new Set((tools ?? []).map((tool) => tool?.name));
+    const webTools = this.buildWebTools(model, webSearch).filter(
+      (tool) => !existing.has(tool.name)
+    );
+    return [...(tools ?? []), ...webTools];
+  }
+
+  /**
+   * Normalizes an Anthropic citation. Web search citations carry a URL.
+   * Citations into fetched documents carry only a document title, so they are
+   * resolved against the documents fetched earlier in the same response.
+   */
+  private mapCitation(
+    citation: any,
+    fetchedDocs: Map<string, string>
+  ): Citation | null {
+    let url: string | undefined = citation?.url;
+    const title: string | undefined =
+      citation?.title ?? citation?.document_title ?? undefined;
+    if (!url && title) {
+      url = fetchedDocs.get(title);
+    }
+    if (!url) return null;
+    return {
+      type: "url_citation",
+      url,
+      ...(title && { title }),
+      ...(citation.cited_text && { citedText: citation.cited_text }),
+      vendor: "anthropic",
+      raw: citation,
+    };
+  }
+
+  /**
+   * Maps a server tool result block from the API to our normalized block.
+   * Records fetched document titles in `fetchedDocs` for citation lookup.
+   */
+  private mapServerToolResult(
+    block: any,
+    fetchedDocs: Map<string, string>
+  ): ContentBlock | null {
+    if (block.type === "web_search_tool_result") {
+      const content = block.content;
+      // Errors return HTTP 200 with a single error object instead of a list
+      if (!Array.isArray(content)) {
+        return {
+          type: "web_search_tool_result",
+          toolUseId: block.tool_use_id,
+          results: [],
+          errorCode: content?.error_code ?? "unknown",
+          vendor: "anthropic",
+          raw: block,
+        };
+      }
+      return {
+        type: "web_search_tool_result",
+        toolUseId: block.tool_use_id,
+        results: content
+          .filter((result: any) => result?.type === "web_search_result")
+          .map((result: any) => ({
+            url: result.url,
+            ...(result.title && { title: result.title }),
+            ...(result.page_age !== undefined && { pageAge: result.page_age }),
+          })),
+        vendor: "anthropic",
+        raw: block,
+      };
+    }
+    if (block.type === "web_fetch_tool_result") {
+      const content = block.content;
+      if (content?.type !== "web_fetch_result") {
+        return {
+          type: "web_fetch_tool_result",
+          toolUseId: block.tool_use_id,
+          errorCode: content?.error_code ?? "unknown",
+          vendor: "anthropic",
+          raw: block,
+        };
+      }
+      const title: string | undefined = content.content?.title ?? undefined;
+      if (title && content.url) {
+        fetchedDocs.set(title, content.url);
+      }
+      return {
+        type: "web_fetch_tool_result",
+        toolUseId: block.tool_use_id,
+        url: content.url,
+        ...(title && { title }),
+        retrievedAt: content.retrieved_at ?? null,
+        vendor: "anthropic",
+        raw: block,
+      };
+    }
+    return null;
+  }
+
+  /** Web search fee for a request: the model's per-search cost x searches. */
+  private computeWebSearchFee(searches: number): number {
+    return (this.webSearchCost ?? 0) * searches;
   }
 
   /**
@@ -448,9 +634,58 @@ export class AnthropicAdapter implements AIVendorAdapter {
         return { role, content: msg.content };
       }
 
+      // A server_tool_use block must be followed by its result, so only echo
+      // Claude-origin pairs where both halves are present.
+      const serverToolUseIds = new Set<string>();
+      const serverToolResultIds = new Set<string>();
+      if (msg.role === "assistant") {
+        for (const block of msg.content) {
+          if (block.type === "server_tool_use" && block.vendor === "anthropic") {
+            serverToolUseIds.add(block.id);
+          } else if (
+            (block.type === "web_search_tool_result" ||
+              block.type === "web_fetch_tool_result") &&
+            block.vendor === "anthropic" &&
+            block.raw
+          ) {
+            serverToolResultIds.add(block.toolUseId);
+          }
+        }
+      }
+
       // Map our content blocks to Anthropic's ContentBlockParam format
       const mappedContent = msg.content.reduce<FormattedAnthropicContentBlock[]>(
         (acc, block) => {
+          if (
+            block.type === "server_tool_use" ||
+            block.type === "web_search_tool_result" ||
+            block.type === "web_fetch_tool_result"
+          ) {
+            const id =
+              block.type === "server_tool_use" ? block.id : block.toolUseId;
+            if (!serverToolUseIds.has(id) || !serverToolResultIds.has(id)) {
+              return acc; // OpenAI-origin, or an unpaired half
+            }
+            if (block.type === "server_tool_use") {
+              let input: unknown = {};
+              try {
+                input = JSON.parse(block.input);
+              } catch {
+                console.warn(
+                  `Server tool input was not valid JSON: ${block.input}`
+                );
+              }
+              acc.push({
+                type: "server_tool_use",
+                id: block.id,
+                name: block.name as ServerToolUseBlockParam["name"],
+                input,
+              });
+            } else {
+              acc.push(block.raw as FormattedAnthropicContentBlock);
+            }
+            return acc;
+          }
           if (block.type === "text") {
             acc.push({
               type: "text",
@@ -617,39 +852,72 @@ export class AnthropicAdapter implements AIVendorAdapter {
     };
 
     // Add tools if provided
-    if (tools) {
-      requestParams.tools = tools;
+    const requestTools = this.buildRequestTools(
+      model,
+      tools,
+      options.webSearch
+    );
+    if (requestTools) {
+      requestParams.tools = requestTools;
     }
 
-    const response = await this.client.messages.create(requestParams);
+    let response = await this.client.messages.create(requestParams);
+    // Server tools can pause a long turn. Send the paused content back to
+    // continue, and collect every round's content and usage.
+    const responseContent: any[] = [...response.content];
+    let inputTokens = response.usage.input_tokens;
+    let outputTokens = response.usage.output_tokens;
+    let webSearches = response.usage.server_tool_use?.web_search_requests ?? 0;
+    let webFetches = response.usage.server_tool_use?.web_fetch_requests ?? 0;
+    for (
+      let round = 0;
+      response.stop_reason === "pause_turn" && round < MAX_PAUSE_CONTINUATIONS;
+      round++
+    ) {
+      requestParams.messages = [
+        ...requestParams.messages,
+        { role: "assistant", content: response.content },
+      ];
+      response = await this.client.messages.create(requestParams);
+      responseContent.push(...response.content);
+      inputTokens += response.usage.input_tokens;
+      outputTokens += response.usage.output_tokens;
+      webSearches += response.usage.server_tool_use?.web_search_requests ?? 0;
+      webFetches += response.usage.server_tool_use?.web_fetch_requests ?? 0;
+    }
 
     let usage: UsageResponse | undefined = undefined;
 
     if (
-      response.usage.input_tokens &&
-      response.usage.output_tokens &&
+      inputTokens &&
+      outputTokens &&
       this.inputTokenCost &&
       this.outputTokenCost
     ) {
-      const inputCost = computeResponseCost(
-        response.usage.input_tokens,
-        this.inputTokenCost
-      );
+      const inputCost = computeResponseCost(inputTokens, this.inputTokenCost);
       const outputCost = computeResponseCost(
-        response.usage.output_tokens,
+        outputTokens,
         this.outputTokenCost
       );
+      const webSearchCost = this.computeWebSearchFee(webSearches);
       usage = {
         inputCost: inputCost,
         outputCost: outputCost,
-        totalCost: inputCost + outputCost,
+        ...(webSearchCost > 0 && { webSearchCost }),
+        ...(webSearches > 0 && {
+          didWebSearch: true,
+          webSearchCount: webSearches,
+        }),
+        ...(webFetches > 0 && { webFetchCount: webFetches }),
+        totalCost: inputCost + outputCost + webSearchCost,
       };
     }
 
     // Convert Anthropic response blocks to our ContentBlock format
     const contentBlocks: ContentBlock[] = [];
+    const fetchedDocs = new Map<string, string>();
 
-    for (const block of response.content) {
+    for (const block of responseContent) {
       if (block.type === "thinking") {
         contentBlocks.push({
           type: "thinking",
@@ -659,10 +927,29 @@ export class AnthropicAdapter implements AIVendorAdapter {
       } else if (block.type === "redacted_thinking") {
         contentBlocks.push({ type: "redacted_thinking", data: block.data });
       } else if (block.type === "text") {
+        const citations = (block.citations ?? [])
+          .map((citation: any) => this.mapCitation(citation, fetchedDocs))
+          .filter((citation: Citation | null): citation is Citation => !!citation);
         contentBlocks.push({
           type: "text",
           text: block.text,
+          ...(citations.length > 0 && { citations }),
         });
+      } else if (block.type === "server_tool_use") {
+        contentBlocks.push({
+          type: "server_tool_use",
+          id: block.id,
+          name: block.name,
+          input: JSON.stringify(block.input ?? {}),
+          status: "completed",
+          vendor: "anthropic",
+        });
+      } else if (
+        block.type === "web_search_tool_result" ||
+        block.type === "web_fetch_tool_result"
+      ) {
+        const mapped = this.mapServerToolResult(block, fetchedDocs);
+        if (mapped) contentBlocks.push(mapped);
       } else if (block.type === "tool_use") {
         // Map Anthropic tool_use to our ToolUseBlock, including the ID
         contentBlocks.push({
@@ -737,15 +1024,6 @@ export class AnthropicAdapter implements AIVendorAdapter {
       const resolvedMaxTokens =
         maxTokens || this.getDefaultMaxTokens(model, true);
 
-      // Build stream request parameters based on model tier
-      const baseStreamParams = {
-        model,
-        messages: formattedMessages,
-        system: systemPrompt,
-        max_tokens: resolvedMaxTokens,
-        stream: true as const, // Use 'as const' to ensure TypeScript knows this is always true
-      };
-
       const thinkingParams = this.buildThinkingParams(
         model,
         thinkingMode,
@@ -755,125 +1033,240 @@ export class AnthropicAdapter implements AIVendorAdapter {
         outputFormat,
         thinkingDisplay
       );
+      const requestTools = this.buildRequestTools(
+        model,
+        tools,
+        options.webSearch
+      );
 
-      const stream = await this.client.messages.create({
-        ...baseStreamParams,
-        ...thinkingParams,
-        ...samplingParams,
-        ...(tools && { tools }),
-      });
-
-      const partialBlocks = new Map<number, ContentBlock>();
-      // State variables for final meta block
+      // State for the final meta block, summed across pause_turn rounds
       let finalResponseId: string | undefined = undefined;
       let inputTokens = 0;
       let outputTokens = 0;
+      let webSearches = 0;
+      let webFetches = 0;
       let stopReason: string | null | undefined = undefined;
       let stopDetails: { category?: string | null } | null | undefined =
         undefined;
+      // Fetched document title -> URL, for resolving document citations
+      const fetchedDocs = new Map<string, string>();
+      let requestMessages: any[] = formattedMessages;
 
-      for await (const event of stream) {
-        switch (event.type) {
-          case "message_start":
-            // Capture the response ID and input tokens, but do not yield yet.
-            finalResponseId = event.message.id;
-            inputTokens = event.message.usage.input_tokens;
-            break;
+      for (let round = 0; ; round++) {
+        const stream = await this.client.messages.create({
+          model,
+          messages: requestMessages,
+          system: systemPrompt,
+          max_tokens: resolvedMaxTokens,
+          stream: true as const,
+          ...thinkingParams,
+          ...samplingParams,
+          ...(requestTools && { tools: requestTools }),
+        });
 
-          case "content_block_start": {
-            const { index, content_block } = event;
-            switch (content_block.type) {
-              case "text":
-                partialBlocks.set(index, { type: "text", text: "" });
-                break;
-              case "thinking":
-                partialBlocks.set(index, {
-                  type: "thinking",
-                  thinking: "",
-                  signature: "anthropic",
-                });
-                break;
-              case "redacted_thinking":
-                // Arrives complete in content_block_start; no deltas follow.
-                yield { type: "redacted_thinking", data: content_block.data };
-                break;
-              case "tool_use":
-                partialBlocks.set(index, {
-                  type: "tool_use",
-                  id: content_block.id,
-                  name: content_block.name,
-                  input: "",
-                });
-                break;
-            }
-            break;
-          }
+        const partialBlocks = new Map<number, ContentBlock>();
+        // Verbatim API blocks for this round, sent back on pause_turn
+        const rawBlocks = new Map<number, any>();
+        let roundOutputTokens = 0;
+        let roundSearches = 0;
+        let roundFetches = 0;
+        stopReason = undefined;
+        stopDetails = undefined;
 
-          case "content_block_delta": {
-            const { index, delta } = event;
-            const block = partialBlocks.get(index);
-            if (!block) break;
+        for await (const event of stream) {
+          switch (event.type) {
+            case "message_start":
+              // Capture the response ID and input tokens, but do not yield yet.
+              finalResponseId = event.message.id;
+              inputTokens += event.message.usage.input_tokens;
+              break;
 
-            switch (delta.type) {
-              case "text_delta":
-                if (block.type === "text") {
-                  yield { type: "text", text: delta.text };
-                }
-                break;
-              case "thinking_delta":
-                if (block.type === "thinking") {
-                  yield {
-                    type: "thinking",
-                    thinking: delta.thinking,
-                    signature: "",
-                  };
-                }
-                break;
-              case "signature_delta":
-                if (block.type === "thinking") {
-                  yield {
+            case "content_block_start": {
+              const { index, content_block } = event;
+              const raw: any = { ...content_block };
+              if (raw.type === "text") {
+                raw.text = "";
+                if (!raw.citations?.length) delete raw.citations;
+              }
+              if (raw.type === "thinking") {
+                raw.thinking = "";
+                raw.signature = "";
+              }
+              if (raw.type === "tool_use" || raw.type === "server_tool_use") {
+                raw.input = "";
+              }
+              rawBlocks.set(index, raw);
+
+              switch (content_block.type) {
+                case "text":
+                  partialBlocks.set(index, { type: "text", text: "" });
+                  break;
+                case "thinking":
+                  partialBlocks.set(index, {
                     type: "thinking",
                     thinking: "",
-                    signature: delta.signature,
-                  };
+                    signature: "anthropic",
+                  });
+                  break;
+                case "redacted_thinking":
+                  // Arrives complete in content_block_start; no deltas follow.
+                  yield { type: "redacted_thinking", data: content_block.data };
+                  break;
+                case "tool_use":
+                  partialBlocks.set(index, {
+                    type: "tool_use",
+                    id: content_block.id,
+                    name: content_block.name,
+                    input: "",
+                  });
+                  break;
+                case "server_tool_use":
+                  partialBlocks.set(index, {
+                    type: "server_tool_use",
+                    id: content_block.id,
+                    name: content_block.name,
+                    input: "",
+                    status: "completed",
+                    vendor: "anthropic",
+                  });
+                  break;
+                case "web_search_tool_result":
+                case "web_fetch_tool_result": {
+                  // Results arrive complete in content_block_start.
+                  const mapped = this.mapServerToolResult(
+                    content_block,
+                    fetchedDocs
+                  );
+                  if (mapped) yield mapped;
+                  break;
                 }
-                break;
-              case "input_json_delta":
-                if (block.type === "tool_use") {
-                  block.input += delta.partial_json;
+              }
+              break;
+            }
+
+            case "content_block_delta": {
+              const { index, delta } = event;
+              const block = partialBlocks.get(index);
+              const raw = rawBlocks.get(index);
+              if (!block) break;
+
+              switch (delta.type) {
+                case "text_delta":
+                  if (block.type === "text") {
+                    if (raw) raw.text += delta.text;
+                    yield { type: "text", text: delta.text };
+                  }
+                  break;
+                case "citations_delta":
+                  if (block.type === "text") {
+                    if (raw) (raw.citations ??= []).push(delta.citation);
+                    const citation = this.mapCitation(
+                      delta.citation,
+                      fetchedDocs
+                    );
+                    // An empty text chunk that only carries the citation
+                    if (citation) {
+                      yield { type: "text", text: "", citations: [citation] };
+                    }
+                  }
+                  break;
+                case "thinking_delta":
+                  if (block.type === "thinking") {
+                    if (raw) raw.thinking += delta.thinking;
+                    yield {
+                      type: "thinking",
+                      thinking: delta.thinking,
+                      signature: "",
+                    };
+                  }
+                  break;
+                case "signature_delta":
+                  if (block.type === "thinking") {
+                    if (raw) raw.signature += delta.signature;
+                    yield {
+                      type: "thinking",
+                      thinking: "",
+                      signature: delta.signature,
+                    };
+                  }
+                  break;
+                case "input_json_delta":
+                  if (
+                    block.type === "tool_use" ||
+                    block.type === "server_tool_use"
+                  ) {
+                    block.input += delta.partial_json;
+                    if (raw) raw.input += delta.partial_json;
+                  }
+                  break;
+              }
+              break;
+            }
+
+            case "content_block_stop": {
+              const { index } = event;
+              const block = partialBlocks.get(index);
+              const raw = rawBlocks.get(index);
+              if (
+                raw &&
+                (raw.type === "tool_use" || raw.type === "server_tool_use")
+              ) {
+                try {
+                  raw.input = raw.input ? JSON.parse(raw.input) : {};
+                } catch {
+                  raw.input = {};
                 }
-                break;
+              }
+              if (block && block.type === "tool_use") {
+                yield block;
+              }
+              if (block && block.type === "server_tool_use") {
+                yield { ...block, input: block.input || "{}" };
+              }
+              break;
             }
-            break;
+
+            case "message_delta":
+              // The usage in message_delta is cumulative for this round.
+              // We capture the latest value on each delta event.
+              if (event.usage) {
+                roundOutputTokens = event.usage.output_tokens;
+                if (event.usage.server_tool_use) {
+                  roundSearches =
+                    event.usage.server_tool_use.web_search_requests ?? 0;
+                  roundFetches =
+                    event.usage.server_tool_use.web_fetch_requests ?? 0;
+                }
+              }
+              if (event.delta?.stop_reason) {
+                stopReason = event.delta.stop_reason;
+              }
+              if (event.delta?.stop_details) {
+                stopDetails = event.delta.stop_details;
+              }
+              break;
+
+            case "message_stop":
+              // This event signals the end of the stream. We will yield our meta block after the loop.
+              break;
           }
-
-          case "content_block_stop": {
-            const { index } = event;
-            const block = partialBlocks.get(index);
-            if (block && block.type === "tool_use") {
-              yield block;
-            }
-            break;
-          }
-
-          case "message_delta":
-            // The usage in message_delta is cumulative for output tokens.
-            // We capture the latest value on each delta event.
-            if (event.usage) {
-              outputTokens = event.usage.output_tokens;
-            }
-            if (event.delta?.stop_reason) {
-              stopReason = event.delta.stop_reason;
-            }
-            if (event.delta?.stop_details) {
-              stopDetails = event.delta.stop_details;
-            }
-            break;
-
-          case "message_stop":
-            // This event signals the end of the stream. We will yield our meta block after the loop.
-            break;
         }
+
+        outputTokens += roundOutputTokens;
+        webSearches += roundSearches;
+        webFetches += roundFetches;
+
+        if (stopReason !== "pause_turn" || round >= MAX_PAUSE_CONTINUATIONS) {
+          break;
+        }
+        // Continue the paused turn: send its content back as-is.
+        const pausedContent = Array.from(rawBlocks.entries())
+          .sort(([a], [b]) => a - b)
+          .map(([, raw]) => raw);
+        requestMessages = [
+          ...requestMessages,
+          { role: "assistant", content: pausedContent },
+        ];
       }
 
       // Surface refusals, truncation, and context-window stops so callers
@@ -899,10 +1292,17 @@ export class AnthropicAdapter implements AIVendorAdapter {
             outputTokens,
             this.outputTokenCost
           );
+          const webSearchCost = this.computeWebSearchFee(webSearches);
           finalUsage = {
             inputCost,
             outputCost,
-            totalCost: inputCost + outputCost,
+            ...(webSearchCost > 0 && { webSearchCost }),
+            ...(webSearches > 0 && {
+              didWebSearch: true,
+              webSearchCount: webSearches,
+            }),
+            ...(webFetches > 0 && { webFetchCount: webFetches }),
+            totalCost: inputCost + outputCost + webSearchCost,
           };
         }
         yield {

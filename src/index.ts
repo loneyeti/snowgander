@@ -28,6 +28,13 @@ export type {
   ImageGenerationResponse,
   ImageEditResponse,
   MetaBlock,
+  Citation,
+  ServerToolUseBlock,
+  WebSearchResultItem,
+  WebSearchToolResultBlock,
+  WebFetchToolResultBlock,
+  WebSearchOptions,
+  UsageResponse,
 } from "./types";
 
 // Optionally export individual adapters if direct use is needed,

@@ -198,6 +198,19 @@ Never hardcode API keys or vendor settings. Always use `VendorConfig` and `Model
 **Tool/MCP Handling:**
 The approach is evolving. The Anthropic adapter now handles tools directly in `sendChat()` and `generateResponse()`. When adding new adapters, follow the pattern in `AnthropicAdapter` for tool integration.
 
+**Web Search / Grounded Research (OpenAI + Claude):**
+Callers set `AIRequestOptions.webSearch` (`WebSearchOptions`), and each adapter builds its own tool:
+- OpenAI: `buildTools` adds `{type: "web_search"}` (filters, user_location) and `include: ["web_search_call.action.sources"]`, and rewrites a legacy `web_search_preview` in `tools` to `web_search`.
+- Anthropic: `buildWebTools` picks `web_search_20260209` / `web_fetch_20260209` for adaptive tiers, else `web_search_20250305` / `web_fetch_20250910`. `fetch: true` adds web_fetch with citations enabled. Caller tools with the same `name` win.
+
+Research is normalized into `ServerToolUseBlock` (a step, with `input` as a JSON string), `WebSearchToolResultBlock` / `WebFetchToolResultBlock` (with `errorCode` for the HTTP-200 error form), and `TextBlock.citations` (`Citation`). Every block has `vendor`.
+- OpenAI streams a `server_tool_use` on `output_item.added` (in_progress) and again on `output_item.done` (completed, same id), plus a result block when `action.sources` exist.
+- Streaming citations (OpenAI `output_text.annotation.added`, Claude `citations_delta`) are yielded as `{type: "text", text: "", citations}`.
+- Claude document citations without a URL are resolved through fetched document titles.
+- Claude result blocks keep the verbatim API block in `raw`. `formatMessages` echoes Claude `server_tool_use` + result pairs (both halves required), drops OpenAI-origin or unpaired blocks, and sends text back without citations. OpenAI and the other adapters drop research blocks from history.
+- `pause_turn` is continued internally (`MAX_PAUSE_CONTINUATIONS` = 3) by appending the paused raw content as an assistant turn. This bypasses `assertNoPrefill`. Usage is summed across rounds. If the limit is hit, the result is an `ErrorBlock`.
+- `webSearchCost` is per search call: OpenAI counts `web_search_call` items except `open_page` / `find`, and Claude uses `usage.server_tool_use.web_search_requests`. `UsageResponse` adds `webSearchCount` / `webFetchCount`.
+
 **OpenAI Image Generation Streaming:**
 Snowgoose streams images through `OpenAIAdapter.streamResponse()` using the Responses API
 `image_generation` tool (built by `buildImageGenerationTool` from `OpenAIImageGenerationOptions`;

@@ -16,6 +16,10 @@ import {
   ImageBlock, // Correctly import ImageBlock
   ImageGenerationCallBlock, // Import the new type
   OpenAIImageGenerationOptions,
+  Citation,
+  ServerToolUseBlock,
+  WebSearchOptions,
+  WebSearchToolResultBlock,
   // Import other ContentBlock types if needed for construction
 } from "../types";
 // Removed duplicate } from "../types";
@@ -352,9 +356,14 @@ export class OpenAIAdapter implements AIVendorAdapter {
             } else if (
               block.type === "thinking" ||
               block.type === "redacted_thinking" ||
-              block.type === "image_generation_call"
+              block.type === "image_generation_call" ||
+              block.type === "server_tool_use" ||
+              block.type === "web_search_tool_result" ||
+              block.type === "web_fetch_tool_result"
             ) {
-              return null; // Skip thinking blocks for OpenAI input
+              // Research steps are display-only here: previous_response_id
+              // carries OpenAI's own search state between turns.
+              return null;
             }
             console.warn(
               `Unsupported content block type '${block.type}' for OpenAI input mapping.`
@@ -424,6 +433,138 @@ export class OpenAIAdapter implements AIVendorAdapter {
     return tool;
   }
 
+  /**
+   * Builds the Responses API `web_search` tool. Options OpenAI doesn't
+   * support (fetch, maxUses, blockedDomains) are ignored.
+   */
+  private buildWebSearchTool(opts: WebSearchOptions): any {
+    const tool: any = { type: "web_search" };
+    if (opts.allowedDomains?.length) {
+      tool.filters = { allowed_domains: opts.allowedDomains };
+    }
+    const loc = opts.userLocation;
+    if (loc && (loc.city || loc.region || loc.country || loc.timezone)) {
+      tool.user_location = {
+        type: "approximate",
+        ...(loc.city && { city: loc.city }),
+        ...(loc.region && { region: loc.region }),
+        ...(loc.country && { country: loc.country }),
+        ...(loc.timezone && { timezone: loc.timezone }),
+      };
+    }
+    return tool;
+  }
+
+  /**
+   * Assembles the request's tools: caller tools (with the legacy
+   * `web_search_preview` upgraded to `web_search`), the web search tool from
+   * `webSearch`, and the image generation tool. Also returns the `include`
+   * list, which asks for search sources when web search is on.
+   */
+  private buildTools(options: AIRequestOptions): {
+    tools: any[];
+    include: string[] | undefined;
+  } {
+    const tools = (options.tools ?? []).map((tool) =>
+      typeof tool?.type === "string" &&
+      tool.type.startsWith("web_search_preview")
+        ? { ...tool, type: "web_search" }
+        : tool
+    );
+    if (
+      options.webSearch &&
+      !tools.some((tool) => tool?.type === "web_search")
+    ) {
+      tools.push(this.buildWebSearchTool(options.webSearch));
+    }
+    if (options.openaiImageGenerationOptions) {
+      tools.push(
+        this.buildImageGenerationTool(options.openaiImageGenerationOptions)
+      );
+    }
+    const hasWebSearch = tools.some(
+      (tool) =>
+        typeof tool?.type === "string" && tool.type.startsWith("web_search")
+    );
+    return {
+      tools,
+      include: hasWebSearch ? ["web_search_call.action.sources"] : undefined,
+    };
+  }
+
+  /**
+   * Maps a `web_search_call` output item to a research step, plus a result
+   * block when the API returned sources for a search.
+   */
+  private mapWebSearchCall(
+    item: any,
+    status: ServerToolUseBlock["status"]
+  ): ContentBlock[] {
+    const action = item?.action;
+    let input: Record<string, unknown> = {};
+    if (action?.type === "search") {
+      input = action.queries?.length
+        ? { query: action.query ?? action.queries[0], queries: action.queries }
+        : { query: action.query };
+    } else if (action?.type === "open_page") {
+      input = { url: action.url };
+    } else if (action?.type === "find") {
+      input = { url: action.url, pattern: action.pattern };
+    }
+    const blocks: ContentBlock[] = [
+      {
+        type: "server_tool_use",
+        id: item.id,
+        name: "web_search",
+        input: JSON.stringify(input),
+        status: item.status === "failed" ? "failed" : status,
+        vendor: "openai",
+      },
+    ];
+    if (Array.isArray(action?.sources) && action.sources.length > 0) {
+      const result: WebSearchToolResultBlock = {
+        type: "web_search_tool_result",
+        toolUseId: item.id,
+        results: action.sources
+          .filter((source: any) => typeof source?.url === "string")
+          .map((source: any) => ({ url: source.url })),
+        vendor: "openai",
+      };
+      blocks.push(result);
+    }
+    return blocks;
+  }
+
+  /** Maps a `url_citation` annotation, or returns null for other kinds. */
+  private mapUrlCitation(annotation: any, offset = 0): Citation | null {
+    if (annotation?.type !== "url_citation" || !annotation.url) return null;
+    return {
+      type: "url_citation",
+      url: annotation.url,
+      ...(annotation.title && { title: annotation.title }),
+      ...(typeof annotation.start_index === "number" && {
+        startIndex: annotation.start_index + offset,
+      }),
+      ...(typeof annotation.end_index === "number" && {
+        endIndex: annotation.end_index + offset,
+      }),
+      vendor: "openai",
+    };
+  }
+
+  /**
+   * Number of billable web searches: every web_search_call except page opens
+   * and in-page finds, which are follow-up actions.
+   */
+  private countWebSearches(output: any[] | undefined): number {
+    return (output ?? []).filter(
+      (item) =>
+        item?.type === "web_search_call" &&
+        item.action?.type !== "open_page" &&
+        item.action?.type !== "find"
+    ).length;
+  }
+
   private imageMimeType(opts?: OpenAIImageGenerationOptions): string {
     switch (opts?.outputFormat) {
       case "jpeg":
@@ -440,7 +581,6 @@ export class OpenAIAdapter implements AIVendorAdapter {
       options;
     // Flags to track tool usage from the response
     let didGenerateImage = false;
-    let didUseWebSearch = false;
 
     const { apiInput, imageGenerationCallReference } =
       this.mapMessagesToApiInput(messages, model);
@@ -450,12 +590,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
     const samplingParams = this.buildSamplingParams(options, model);
     const textParam = this.buildTextParam(options, model);
 
-    const finalTools = tools ? [...tools] : [];
-    if (options.openaiImageGenerationOptions) {
-      finalTools.push(
-        this.buildImageGenerationTool(options.openaiImageGenerationOptions)
-      );
-    }
+    const { tools: finalTools, include } = this.buildTools(options);
 
     // Build the final payload, including the image_generation_call reference if it exists
     const finalApiPayload = [...apiInput];
@@ -469,7 +604,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
       previous_response_id: previousResponseId, // <-- ADDED
       // Use type assertion 'as any' to bypass strict SDK checks for the input array structure
       input: finalApiPayload as any,
-      tools: finalTools, // <-- This line is changed
+      tools: finalTools,
+      ...(include && { include: include as any }),
       store: store,
       // Spread the reasoning/sampling/text fragments if they exist.
       ...(reasoningParam as any),
@@ -483,11 +619,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
         if (outputItem.type === "image_generation_call") {
           didGenerateImage = true;
         }
-        if (outputItem.type === "web_search_call") {
-          didUseWebSearch = true;
-        }
       }
     }
+    const webSearchCount = this.countWebSearches(response.output as any[]);
+    const didUseWebSearch = webSearchCount > 0;
 
     let usage: UsageResponse | undefined = undefined; // Initialize usage
 
@@ -512,11 +647,8 @@ export class OpenAIAdapter implements AIVendorAdapter {
       // we must hard code in the most expensive image generation
       // outputCost = didGenerateImage ? outputCost + 0.25 : outputCost;
 
-      // Check for web search flat fee
-      const webSearchCost =
-        didUseWebSearch && this.modelConfig.webSearchCost
-          ? this.modelConfig.webSearchCost
-          : 0;
+      // webSearchCost is charged per search call
+      const webSearchCost = (this.modelConfig.webSearchCost ?? 0) * webSearchCount;
 
       usage = {
         inputCost: inputCost,
@@ -524,27 +656,34 @@ export class OpenAIAdapter implements AIVendorAdapter {
         webSearchCost: webSearchCost > 0 ? webSearchCost : undefined,
         didGenerateImage: didGenerateImage,
         didWebSearch: didUseWebSearch,
+        ...(webSearchCount > 0 && { webSearchCount }),
         totalCost: inputCost + outputCost + webSearchCost,
       };
     }
 
     // --- Refined Content Extraction ---
-    let extractedText = "";
-    if (response.output_text) {
-      // Use the convenience property if available
-      extractedText = response.output_text;
-    } else if (response.output && response.output.length > 0) {
-      // Manually search for text output if output_text is not present
-      for (const outputItem of response.output) {
-        if (outputItem.type === "message" && outputItem.content) {
-          for (const contentItem of outputItem.content) {
-            if (contentItem.type === "output_text" && contentItem.text) {
-              extractedText += contentItem.text; // Concatenate if multiple text parts exist
+    // Text parts are concatenated into one block. Citation offsets are shifted
+    // so they index into the concatenated text.
+    let messageText = "";
+    const citations: Citation[] = [];
+    for (const outputItem of (response.output ?? []) as any[]) {
+      if (outputItem.type === "message" && outputItem.content) {
+        for (const contentItem of outputItem.content) {
+          if (contentItem.type === "output_text" && contentItem.text) {
+            for (const annotation of contentItem.annotations ?? []) {
+              const citation = this.mapUrlCitation(
+                annotation,
+                messageText.length
+              );
+              if (citation) citations.push(citation);
             }
+            messageText += contentItem.text;
           }
         }
       }
     }
+    // Prefer the convenience property if available
+    const extractedText = response.output_text || messageText;
 
     // Simplified check: if we didn't extract any text, log an error.
     // A more robust check might inspect for specific non-text outputs like tool calls if needed.
@@ -599,8 +738,19 @@ export class OpenAIAdapter implements AIVendorAdapter {
       }
     }
 
+    // Research steps, in the order the model ran them
+    for (const outputItem of (response.output ?? []) as any[]) {
+      if (outputItem.type === "web_search_call") {
+        responseBlock.push(...this.mapWebSearchCall(outputItem, "completed"));
+      }
+    }
+
     if (extractedText) {
-      responseBlock.push({ type: "text", text: extractedText });
+      responseBlock.push({
+        type: "text",
+        text: extractedText,
+        ...(citations.length > 0 && { citations }),
+      });
     }
 
     // Handle image generation output if tools were used
@@ -726,12 +876,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       finalApiPayload.push(imageGenerationCallReference);
     }
 
-    const finalTools = tools ? [...tools] : [];
-    if (options.openaiImageGenerationOptions) {
-      finalTools.push(
-        this.buildImageGenerationTool(options.openaiImageGenerationOptions)
-      );
-    }
+    const { tools: finalTools, include } = this.buildTools(options);
 
     const reasoningParam = this.buildReasoningParam(options, model);
     const samplingParams = this.buildSamplingParams(options, model);
@@ -743,6 +888,7 @@ export class OpenAIAdapter implements AIVendorAdapter {
       previous_response_id: previousResponseId, // Pass state ID
       input: finalApiPayload,
       tools: finalTools,
+      ...(include && { include }),
       store: store,
       stream: true,
       ...(reasoningParam as any),
@@ -790,7 +936,27 @@ export class OpenAIAdapter implements AIVendorAdapter {
             }
             break;
 
+          case "response.output_item.added":
+            if (event.item?.type === "web_search_call") {
+              yield* this.mapWebSearchCall(event.item, "in_progress");
+            }
+            break;
+
+          case "response.output_text.annotation.added": {
+            // Citations stream separately from text. Yield them as an empty
+            // text chunk so consumers can attach them to the current text block.
+            const citation = this.mapUrlCitation(event.annotation);
+            if (citation) {
+              yield { type: "text", text: "", citations: [citation] };
+            }
+            break;
+          }
+
           case "response.output_item.done":
+            if (event.item?.type === "web_search_call") {
+              yield* this.mapWebSearchCall(event.item, "completed");
+              break;
+            }
             // The finished image arrives on the completed output item, not in a
             // partial_image event.
             if (
@@ -807,14 +973,6 @@ export class OpenAIAdapter implements AIVendorAdapter {
                 isPartial: false,
               };
             }
-            break;
-
-          case "response.web_search_call.searching":
-            yield {
-              type: "thinking",
-              thinking: "Searching the web...",
-              signature: "openai",
-            };
             break;
 
           case "response.reasoning_summary_text.delta":
@@ -857,9 +1015,10 @@ export class OpenAIAdapter implements AIVendorAdapter {
               const didGenerateImage = event.response.output?.some(
                 (o: any) => o.type === "image_generation_call"
               );
-              const didWebSearch = event.response.output?.some(
-                (o: any) => o.type === "web_search_call"
+              const webSearchCount = this.countWebSearches(
+                event.response.output
               );
+              const didWebSearch = webSearchCount > 0;
               const inputCost = computeResponseCost(
                 event.response.usage.input_tokens,
                 this.inputTokenCost
@@ -875,16 +1034,16 @@ export class OpenAIAdapter implements AIVendorAdapter {
               // Until OpenAI can provide the actual cost of the transaction
               // we must hard code in the most expensive image generation
               // outputCost = didGenerateImage ? outputCost + 0.25 : outputCost;
+              // webSearchCost is charged per search call
               const webSearchCost =
-                didWebSearch && this.modelConfig.webSearchCost
-                  ? this.modelConfig.webSearchCost
-                  : 0;
+                (this.modelConfig.webSearchCost ?? 0) * webSearchCount;
               finalUsage = {
                 inputCost,
                 outputCost,
                 webSearchCost: webSearchCost > 0 ? webSearchCost : undefined,
                 didGenerateImage,
                 didWebSearch,
+                ...(webSearchCount > 0 && { webSearchCount }),
                 totalCost: inputCost + outputCost + webSearchCost,
               };
             }
