@@ -49,7 +49,7 @@ The codebase uses two primary patterns:
 - `AIVendorFactory`: Central factory for creating vendor adapters
 - `setVendorConfig()`: Configure API keys and settings for each vendor
 - `getAdapter()`: Returns the appropriate adapter instance for a vendor/model pair
-- Currently supports: `openai`, `anthropic`, `google`, `openrouter`, `openai-image`, `grok`
+- Currently supports: `openai`, `anthropic`, `google`, `openrouter`, `openai-image`, `grok` (chat + Grok Imagine image generation/editing)
 
 **Adapters (`src/vendors/*.ts`):**
 Each adapter class:
@@ -209,6 +209,25 @@ fallback). Consumers should replace the displayed image by id and persist only t
 For multi-turn edits, include an `ImageGenerationCallBlock` (`{type: "image_generation_call", id}`)
 in history (or use `previousResponseId`); `mapMessagesToApiInput` sends it as a reference and drops
 other image data. Moderation failures surface as an `ErrorBlock` with `code: "moderation_blocked"`.
+
+**Grok Imagine (image generation / editing):**
+`GrokAdapter` routes to the Imagine endpoints when the model name contains `-image` (e.g.
+`grok-imagine-image-2.0`), or `useImageGeneration`/`openaiImageGenerationOptions` is set, and the
+model is `isImageGeneration`. Both `/images/generations` and `/images/edits` go through the OpenAI
+SDK's generic `client.post()`. xAI's edit endpoint is JSON-only, and `images.edit()` sends multipart.
+- Options reuse `OpenAIImageGenerationOptions`: `n`, `aspectRatio`, `resolution` (`1k`/`1.5k`/`2k`),
+  `quality`, `action`, `user`. `size: "WxH"` maps to the nearest supported aspect ratio when
+  `aspectRatio` is omitted. `quality` is sent only to `grok-imagine-image-2.0`
+  (`-quality`/`-pro` redirect there as of Nov 2 2026). There, `high`/`xhigh`/`max` map to `medium`.
+- Multi-turn editing is stateless: `action: "auto"` (default) calls `/images/edits` whenever
+  `collectEditImages` finds a source. Sources are either explicit `openaiImageEditOptions.image`, or
+  the most recent non-partial assistant image followed by the latest user message's images and
+  `visionUrl`. Order matters: the prior image is `<IMAGE_0>` and sets the aspect ratio. Max 5 sources.
+  One source is sent as `image` without `aspect_ratio`; several are sent as `images`.
+  `action: "generate"` ignores history. `action: "edit"` with no source returns an `ErrorBlock`.
+- Always requests `b64_json` (xAI URLs expire, and history must be re-sendable). Returns
+  `ImageDataBlock`s with synthetic `grok_img_*` ids. Cost comes from `usage.cost_in_usd_ticks`
+  (1e10 ticks = $1). `streamResponse` yields the images, then a `meta` block.
 
 **OpenAI API Pattern:**
 The OpenAI adapter uses `client.responses.create()` for the latest OpenAI API format. New OpenAI-compatible adapters should follow this pattern.

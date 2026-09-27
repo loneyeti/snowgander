@@ -210,16 +210,37 @@ export interface AIRequestOptions {
 // --- OpenAI Image API Specific Options ---
 // To be nested within AIRequestOptions
 
+// Grok Imagine aspect ratios (grok-imagine-image models only)
+export type GrokImageAspectRatio =
+  | "1:1"
+  | "3:4"
+  | "4:3"
+  | "9:16"
+  | "16:9"
+  | "2:3"
+  | "3:2"
+  | "9:19.5"
+  | "19.5:9"
+  | "9:20"
+  | "20:9"
+  | "1:2"
+  | "2:1"
+  | "21:9"
+  | "5:2"
+  | "auto";
+
 export interface OpenAIImageGenerationOptions {
-  n?: number; // Kept for compatibility with images.generate API (ignored by the Responses image_generation tool)
+  n?: number; // Kept for compatibility with images.generate API (ignored by the Responses image_generation tool). Grok: 1-10
   model?: string; // Image model for the Responses image_generation tool (e.g. "gpt-image-2.5-sunburst")
-  quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto";
+  quality?: "low" | "medium" | "high" | "xhigh" | "max" | "auto"; // Grok: low/medium/auto on grok-imagine-image-2.0 only (high+ maps to medium)
+  aspectRatio?: GrokImageAspectRatio; // Grok only: output aspect ratio (default auto; derived from size when omitted)
+  resolution?: "1k" | "1.5k" | "2k"; // Grok only: output resolution (default 1k)
   size?: "1024x1024" | "1536x1024" | "1024x1536" | "auto" | `${number}x${number}`; // Custom sizes: multiples of 16, 1:3-3:1, max 3840px edges
   background?: "transparent" | "opaque" | "auto";
   outputFormat?: "png" | "jpeg" | "webp"; // Default png
   outputCompression?: number; // 0-100, jpeg/webp only
   moderation?: "auto" | "low";
-  action?: "auto" | "generate" | "edit"; // Responses tool only
+  action?: "auto" | "generate" | "edit"; // Responses tool; Grok: auto edits the prior/attached image when present
   partialImages?: 0 | 1 | 2 | 3; // Streaming partial previews (adapter default 2)
   inputFidelity?: "low" | "high";
   inputImageMask?: { fileId?: string; imageUrl?: string }; // Responses tool only
@@ -228,7 +249,7 @@ export interface OpenAIImageGenerationOptions {
 
 export interface OpenAIImageEditOptions {
   // prompt is usually taken from AIRequestOptions.prompt or messages
-  image?: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64 conversion
+  image?: (ImageDataBlock | ImageBlock)[]; // Input image(s) - require adapter to handle URL/base64 conversion. Grok: up to 5, overrides history-derived inputs
   mask?: ImageDataBlock | ImageBlock; // Optional mask image - require adapter to handle URL/base64 conversion
   n?: number; // Number of images to generate (default 1)
   // response_format is always b64_json for this adapter
